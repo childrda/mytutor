@@ -29,7 +29,10 @@ class LessonGenerationController extends Controller
             return ApiJson::success([
                 'jobId' => $job->id,
                 'status' => $job->status,
+                'phase' => $job->phase,
+                'progress' => $job->progress,
                 'pollUrl' => $pollUrl,
+                'previewPath' => '/generation/'.$job->id,
                 'pollIntervalMs' => 3000,
             ], 202);
         } catch (\InvalidArgumentException $e) {
@@ -53,9 +56,18 @@ class LessonGenerationController extends Controller
 
         $this->authorize('view', $job);
 
+        $classroomRoles = $job->classroom_roles;
+        if ($classroomRoles === null && is_array($job->result)) {
+            $classroomRoles = $job->result['classroomRoles'] ?? null;
+        }
+
         return ApiJson::success([
             'jobId' => $job->id,
             'status' => $job->status,
+            'phase' => $job->phase,
+            'progress' => $job->progress,
+            'phaseDetail' => $job->phase_detail,
+            'classroomRoles' => $classroomRoles,
             'result' => $job->result,
             'error' => $job->error,
             'updatedAt' => $job->updated_at?->toIso8601String(),

@@ -78,6 +78,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Lesson generation pipeline (Phase 7.3): sequential LLM calls in one job
+    | Empty *model envs fall back to default_chat.model
+    |--------------------------------------------------------------------------
+    */
+    'lesson_generation' => [
+        'roles_model' => env('TUTOR_LESSON_GEN_ROLES_MODEL'),
+        'outline_model' => env('TUTOR_LESSON_GEN_OUTLINE_MODEL'),
+        'content_model' => env('TUTOR_LESSON_GEN_CONTENT_MODEL'),
+        'roles_max_tokens' => max(256, (int) env('TUTOR_LESSON_GEN_ROLES_MAX_TOKENS', 2048)),
+        'outline_max_tokens' => max(512, (int) env('TUTOR_LESSON_GEN_OUTLINE_MAX_TOKENS', 4096)),
+        'content_max_tokens' => max(1024, (int) env('TUTOR_LESSON_GEN_CONTENT_MAX_TOKENS', 8192)),
+        'placeholder_narration_actions' => filter_var(env('TUTOR_LESSON_GEN_PLACEHOLDER_ACTIONS', 'true'), FILTER_VALIDATE_BOOL),
+        'stream_outline' => filter_var(env('TUTOR_LESSON_GEN_STREAM_OUTLINE', 'true'), FILTER_VALIDATE_BOOL),
+        'content_use_pdf_page_images' => filter_var(env('TUTOR_LESSON_GEN_CONTENT_VISION', 'true'), FILTER_VALIDATE_BOOL),
+        'max_pdf_page_images' => max(0, min(4, (int) env('TUTOR_LESSON_GEN_MAX_PDF_IMAGES', 4))),
+        'max_pdf_image_data_url_chars' => max(10_000, (int) env('TUTOR_LESSON_GEN_MAX_PDF_IMAGE_CHARS', 700_000)),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | POST /api/chat streaming (Phase 3.5): limits, PHP max time, Guzzle timeouts
     |--------------------------------------------------------------------------
     */
@@ -221,7 +241,7 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | POST /api/chat, /api/parse-pdf, lesson generation (Phase 6): 0 = off
+    | POST /api/chat, /api/parse-pdf, lesson generation, poll (Phase 6): 0 = off
     |--------------------------------------------------------------------------
     */
     'throttle' => [
@@ -233,6 +253,10 @@ return [
         ],
         'generate_lesson' => [
             'per_minute' => max(0, (int) env('TUTOR_GENERATE_LESSON_THROTTLE_PER_MINUTE', 20)),
+        ],
+        // Status polling must not share the POST bucket (polls every 1–3s would exhaust 20/min).
+        'generate_lesson_poll' => [
+            'per_minute' => max(0, (int) env('TUTOR_GENERATE_LESSON_POLL_THROTTLE_PER_MINUTE', 300)),
         ],
         'publish' => [
             'per_minute' => max(0, (int) env('TUTOR_PUBLISH_THROTTLE_PER_MINUTE', 30)),
@@ -249,6 +273,13 @@ return [
         'max_pages' => max(1, (int) env('TUTOR_PDF_MAX_PAGES', 200)),
         'max_output_chars' => max(5_000, (int) env('TUTOR_PDF_MAX_OUTPUT_CHARS', 500_000)),
         'max_execution_seconds' => max(15, (int) env('TUTOR_PDF_MAX_EXECUTION', 60)),
+        'page_images_enabled' => filter_var(env('TUTOR_PDF_PAGE_IMAGES', 'true'), FILTER_VALIDATE_BOOL),
+        'page_images_max_pages' => max(1, min(5, (int) env('TUTOR_PDF_PAGE_IMAGES_MAX', 3))),
+        'page_images_scale_to_px' => max(400, min(1200, (int) env('TUTOR_PDF_PAGE_IMAGES_SCALE', 900))),
+        'page_images_dpi' => max(72, min(200, (int) env('TUTOR_PDF_PAGE_IMAGES_DPI', 110))),
+        'page_images_max_bytes' => max(50_000, (int) env('TUTOR_PDF_PAGE_IMAGES_MAX_BYTES', 450_000)),
+        'page_images_timeout_seconds' => max(15, (int) env('TUTOR_PDF_PAGE_IMAGES_TIMEOUT', 45)),
+        'pdftoppm_binary' => env('TUTOR_PDF_TOPPM_PATH', ''),
     ],
 
     /*

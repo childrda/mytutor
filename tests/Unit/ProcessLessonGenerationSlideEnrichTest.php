@@ -95,6 +95,56 @@ class ProcessLessonGenerationSlideEnrichTest extends TestCase
     }
 
     #[Test]
+    public function preserves_card_elements_alongside_text(): void
+    {
+        $out = self::enrich([
+            'type' => 'slide',
+            'title' => 'Concepts',
+            'content' => [
+                'type' => 'slide',
+                'canvas' => [
+                    'title' => 'Concepts',
+                    'elements' => [
+                        [
+                            'type' => 'text',
+                            'id' => 'h1',
+                            'x' => 48,
+                            'y' => 72,
+                            'width' => 900,
+                            'height' => 48,
+                            'fontSize' => 24,
+                            'text' => 'Three pillars',
+                        ],
+                        [
+                            'type' => 'card',
+                            'id' => 'c1',
+                            'x' => 40,
+                            'y' => 220,
+                            'width' => 290,
+                            'height' => 300,
+                            'title' => 'Idea A',
+                            'bullets' => ['Line one', 'Line two'],
+                            'caption' => 'A → B',
+                            'accent' => 'emerald',
+                            'icon' => '🌿',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $els = $out['content']['canvas']['elements'];
+        $this->assertCount(2, $els);
+        $this->assertSame('text', $els[0]['type']);
+        $this->assertSame('card', $els[1]['type']);
+        $this->assertSame('c1', $els[1]['id']);
+        $this->assertSame('emerald', $els[1]['accent']);
+        $this->assertSame('🌿', $els[1]['icon']);
+        $this->assertSame(['Line one', 'Line two'], $els[1]['bullets']);
+        $this->assertSame('A → B', $els[1]['caption']);
+    }
+
+    #[Test]
     public function uses_stage_description_as_last_resort_fallback(): void
     {
         $m = (new ReflectionClass(ProcessLessonGenerationJob::class))->getMethod('enrichSlideScene');

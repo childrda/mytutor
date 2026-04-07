@@ -1,5 +1,7 @@
 import SceneContentEditor, { defaultContentForSceneType } from '../../components/studio/SceneContentEditor.jsx';
 import StudioChatPanel from '../../components/studio/StudioChatPanel.jsx';
+import { getEffectiveSpotlight, normalizeActions } from '../../lib/teachingActionsPlayback.js';
+import StudioClassroomRolesPanel from '../../components/studio/StudioClassroomRolesPanel.jsx';
 import StudioMediaStrip from '../../components/studio/StudioMediaStrip.jsx';
 import StudioPublishPanel from '../../components/studio/StudioPublishPanel.jsx';
 import StudioSceneTimeline from '../../components/studio/StudioSceneTimeline.jsx';
@@ -77,6 +79,28 @@ export default function StudioShow({ stage, scenes: initialScenes = [] }) {
         const id = lessonForm.currentSceneId;
         return sceneRows.find((s) => s.id === id) ?? sceneRows[0] ?? null;
     }, [sceneRows, lessonForm.currentSceneId]);
+
+    const playbackStateForSlide = lessonForm.meta?.playbackState;
+    const studioActions = useMemo(() => normalizeActions(currentScene?.actions), [currentScene?.actions]);
+    const studioSafeActionIndex = useMemo(() => {
+        if (studioMode !== 'playback' || !currentScene) {
+            return 0;
+        }
+        if (playbackStateForSlide?.sceneId !== currentScene.id) {
+            return 0;
+        }
+        const i = playbackStateForSlide?.actionIndex;
+        if (studioActions.length === 0) {
+            return 0;
+        }
+        return Math.min(Math.max(0, typeof i === 'number' ? i : 0), studioActions.length - 1);
+    }, [studioMode, currentScene, playbackStateForSlide, studioActions.length]);
+
+    const studioCurrentAction = studioActions[studioSafeActionIndex] ?? null;
+    const studioSpotlight = useMemo(
+        () => getEffectiveSpotlight(studioCurrentAction, studioActions, studioSafeActionIndex),
+        [studioCurrentAction, studioActions, studioSafeActionIndex],
+    );
 
     const flushLessonSave = useCallback(async () => {
         const f = lessonFormRef.current;
@@ -523,6 +547,16 @@ export default function StudioShow({ stage, scenes: initialScenes = [] }) {
         />
     );
 
+    const classroomRolesSection = (
+        <StudioClassroomRolesPanel
+            classroomRoles={lessonForm.meta?.classroomRoles}
+            onChange={(next) => {
+                setLessonForm((f) => ({ ...f, meta: { ...f.meta, classroomRoles: next } }));
+                scheduleLessonSave();
+            }}
+        />
+    );
+
     const sceneTimelineSection = currentScene ? (
         <StudioSceneTimeline
             scene={currentScene}
@@ -530,6 +564,7 @@ export default function StudioShow({ stage, scenes: initialScenes = [] }) {
             playbackState={lessonForm.meta?.playbackState}
             onPlaybackPatch={onPlaybackPatch}
             onActionsChange={onSceneActionsChange}
+            personas={lessonForm.meta?.classroomRoles?.personas ?? []}
         />
     ) : null;
 
@@ -550,13 +585,22 @@ export default function StudioShow({ stage, scenes: initialScenes = [] }) {
                     onChange={(e) => onSceneTitleChange(currentScene.id, e.target.value)}
                 />
             </div>
-            <div className="mt-4 border-t border-zinc-100 pt-4">
+            <div
+                className={`mt-4 border-t border-zinc-100 pt-4 ${
+                    studioMode === 'playback' && currentScene.type === 'slide'
+                        ? 'flex min-h-[min(52vh,520px)] flex-col'
+                        : ''
+                }`}
+            >
                 <SceneContentEditor
                     key={currentScene.id}
                     scene={currentScene}
                     onContentChange={onSceneContentChange}
                     language={lessonForm.language}
                     playbackMode={studioMode === 'playback'}
+                    spotlightElementId={studioMode === 'playback' ? studioSpotlight.elementId : undefined}
+                    spotlightRect={studioMode === 'playback' ? studioSpotlight.rect : undefined}
+                    theaterMode={studioMode === 'playback' && currentScene.type === 'slide'}
                 />
             </div>
             <div className="mt-6">
@@ -591,6 +635,12 @@ export default function StudioShow({ stage, scenes: initialScenes = [] }) {
                             </Link>
                         </p>
                         <h1 className="mt-2 line-clamp-2 text-lg font-semibold text-zinc-900">{lessonForm.name || 'Untitled'}</h1>
+                        <Link
+                            href={`/classroom/${lessonId}`}
+                            className="mt-2 inline-flex text-xs font-medium text-indigo-600 hover:underline"
+                        >
+                            Open classroom
+                        </Link>
                     </div>
 
                     <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-3">
@@ -737,19 +787,24 @@ export default function StudioShow({ stage, scenes: initialScenes = [] }) {
                                             Your slide or quiz is in <strong>Current scene</strong> below (read-only). Use the{' '}
                                             <strong>scene list on the left</strong> to change scenes, or arrow keys when you are not typing in a field. If this
                                             scene has <strong>actions</strong> (narration steps, etc.), use the timeline controls above the scene to step through
-                                            them. This is still the studio layout — for a full-page learner view, use{' '}
-                                            <strong>Publish snapshot</strong> and open the link, or <strong>Download HTML (ZIP)</strong>.
+                                            them.                                             For a full-page presentation with transport and transcript, open{' '}
+                                            <Link href={`/classroom/${lessonId}`} className="font-semibold text-indigo-700 underline">
+                                                Classroom
+                                            </Link>
+                                            . You can also use <strong>Publish snapshot</strong> or <strong>Download HTML (ZIP)</strong> for sharing.
                                         </p>
                                     </div>
                                     {sceneTimelineSection}
                                     {currentSceneSection}
                                     {lessonSettingsSection}
+                                    {classroomRolesSection}
                                     {mediaStripSection}
                                     {publishSection}
                                 </>
                             ) : (
                                 <>
                                     {lessonSettingsSection}
+                                    {classroomRolesSection}
                                     {mediaStripSection}
                                     {publishSection}
                                     {sceneTimelineSection}

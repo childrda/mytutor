@@ -45,6 +45,8 @@ class LessonGenerationAuthTest extends TestCase
         $job = LessonGenerationJob::query()->create([
             'user_id' => $user->id,
             'status' => 'completed',
+            'phase' => 'completed',
+            'progress' => 100,
             'request' => ['requirement' => 'x', 'language' => 'en'],
             'result' => ['stage' => ['name' => 'N'], 'scenes' => []],
         ]);
@@ -53,7 +55,9 @@ class LessonGenerationAuthTest extends TestCase
             ->getJson('/api/generate-lesson/'.$job->id)
             ->assertOk()
             ->assertJsonPath('success', true)
-            ->assertJsonPath('jobId', $job->id);
+            ->assertJsonPath('jobId', $job->id)
+            ->assertJsonPath('phase', 'completed')
+            ->assertJsonPath('progress', 100);
     }
 
     public function test_user_cannot_poll_another_users_job(): void

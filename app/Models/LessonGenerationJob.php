@@ -13,6 +13,10 @@ class LessonGenerationJob extends Model
     protected $fillable = [
         'user_id',
         'status',
+        'phase',
+        'progress',
+        'phase_detail',
+        'classroom_roles',
         'request',
         'result',
         'error',
@@ -23,6 +27,8 @@ class LessonGenerationJob extends Model
         return [
             'request' => 'array',
             'result' => 'array',
+            'phase_detail' => 'array',
+            'classroom_roles' => 'array',
         ];
     }
 

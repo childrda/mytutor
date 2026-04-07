@@ -46,6 +46,9 @@ class HandleInertiaRequests extends Middleware
                     ]
                     : null,
             ],
+            'tutor' => [
+                'classroomServerTts' => trim((string) config('tutor.tts_generation.api_key')) !== '',
+            ],
         ];
     }
 }

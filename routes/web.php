@@ -1,16 +1,18 @@
 <?php
 
 use App\Http\Controllers\Tutor\TutorLessonController;
+use App\Http\Controllers\Tutor\TutorLessonExportController;
+use App\Http\Controllers\Tutor\TutorLessonImportController;
 use App\Http\Controllers\Tutor\TutorSceneController;
 use App\Http\Controllers\Web\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\Web\Auth\RegisteredUserController;
+use App\Http\Controllers\Web\ClassroomLessonController;
 use App\Http\Controllers\Web\HomeController;
+use App\Http\Controllers\Web\LessonGenerationPreviewController;
 use App\Http\Controllers\Web\LessonGenerationWebController;
 use App\Http\Controllers\Web\LessonStudioController;
 use App\Http\Controllers\Web\PublicLessonController;
 use App\Http\Controllers\Web\SettingsController;
-use App\Http\Controllers\Tutor\TutorLessonExportController;
-use App\Http\Controllers\Tutor\TutorLessonImportController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', HomeController::class)->name('home');
@@ -28,6 +30,8 @@ Route::middleware('auth')->group(function (): void {
     Route::get('settings', SettingsController::class)->name('settings');
     Route::get('studio', [LessonStudioController::class, 'index'])->name('studio');
     Route::get('studio/{lesson}', [LessonStudioController::class, 'show'])->name('studio.lesson');
+    Route::get('classroom/{lesson}', [ClassroomLessonController::class, 'show'])->name('classroom.lesson');
+    Route::get('generation/{job}', LessonGenerationPreviewController::class)->name('generation.preview');
 
     Route::prefix('tutor-api')->group(function (): void {
         Route::post('generate-lesson', [LessonGenerationWebController::class, 'store'])

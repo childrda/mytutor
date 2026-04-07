@@ -5,6 +5,7 @@ namespace App\Services\LessonGeneration;
 use App\Models\LessonGenerationJob;
 use App\Models\TutorLesson;
 use App\Models\User;
+use App\Support\LessonGeneration\ClassroomRolesNormalizer;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
@@ -33,20 +34,32 @@ class LessonImportService
         $stage = is_array($result['stage'] ?? null) ? $result['stage'] : [];
         $scenes = is_array($result['scenes'] ?? null) ? $result['scenes'] : [];
 
-        return DB::transaction(function () use ($user, $stage, $scenes): array {
+        $lessonName = is_string($stage['name'] ?? null) && $stage['name'] !== ''
+            ? $stage['name']
+            : 'Generated lesson';
+        $req = is_array($job->request) ? $job->request : [];
+        $requirement = is_string($req['requirement'] ?? null) ? $req['requirement'] : '';
+
+        $rolesSource = $job->classroom_roles;
+        if ($rolesSource === null && is_array($result['classroomRoles'] ?? null)) {
+            $rolesSource = $result['classroomRoles'];
+        }
+
+        $meta = ['importedFrom' => 'lesson_generation_job'];
+        if (is_array($rolesSource)) {
+            $meta['classroomRoles'] = ClassroomRolesNormalizer::normalize($rolesSource, $requirement, $lessonName);
+        }
+
+        return DB::transaction(function () use ($user, $stage, $scenes, $meta, $lessonName): array {
             $lesson = TutorLesson::query()->create([
                 'user_id' => $user->id,
-                'name' => is_string($stage['name'] ?? null) && $stage['name'] !== ''
-                    ? $stage['name']
-                    : 'Generated lesson',
+                'name' => $lessonName,
                 'description' => is_string($stage['description'] ?? null) ? $stage['description'] : null,
                 'language' => is_string($stage['language'] ?? null) ? $stage['language'] : null,
                 'style' => is_string($stage['style'] ?? null) ? $stage['style'] : null,
                 'current_scene_id' => null,
                 'agent_ids' => null,
-                'meta' => [
-                    'importedFrom' => 'lesson_generation_job',
-                ],
+                'meta' => $meta,
             ]);
 
             foreach ($scenes as $index => $row) {

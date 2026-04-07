@@ -1,10 +1,25 @@
 import { Head, Link, router, usePage } from '@inertiajs/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+function formatPdfVisionDiagnostic(code) {
+    const hints = {
+        pdftoppm_not_found:
+            '⚠ Slides will NOT include pictures from this PDF until the server can rasterize pages. Install Poppler (e.g. Ubuntu: sudo apt install poppler-utils; macOS: brew install poppler) so `pdftoppm` exists, then upload the PDF again before generating.',
+        page_images_disabled: '⚠ Page images for AI are turned off (TUTOR_PDF_PAGE_IMAGES).',
+        pdftoppm_failed: '⚠ Could not convert PDF pages to images (pdftoppm error). Check server logs and Poppler install.',
+        pdf_file_too_large_for_rasterization: '⚠ PDF too large to rasterize for vision; try a smaller file or raise TUTOR_PDF_MAX_FILE_BYTES.',
+        page_images_exceed_size_limit: '⚠ Rasterized pages exceeded size limits; raise TUTOR_PDF_PAGE_IMAGES_MAX_BYTES or lower DPI/scale.',
+        temp_dir_unusable: '⚠ Server temp directory not usable for PDF images.',
+        pdftoppm_exception: '⚠ Unexpected error while rasterizing PDF pages.',
+    };
+    return hints[code] || `⚠ PDF page images unavailable (${code}).`;
+}
+
 export default function Home({ healthUrl, lessons = [], languageOptions = [] }) {
     const { auth } = usePage().props;
     const [requirement, setRequirement] = useState('');
     const [pdfContent, setPdfContent] = useState('');
+    const [pdfPageImages, setPdfPageImages] = useState([]);
     const [language, setLanguage] = useState('en');
     const [enableWebSearch, setEnableWebSearch] = useState(false);
     const [enableImageGeneration, setEnableImageGeneration] = useState(false);
@@ -13,34 +28,27 @@ export default function Home({ healthUrl, lessons = [], languageOptions = [] }) 
     const [agentMode, setAgentMode] = useState('balanced');
     const [pdfFileNote, setPdfFileNote] = useState('');
 
-    const [jobId, setJobId] = useState('');
-    const [jobStatus, setJobStatus] = useState('');
-    const [jobError, setJobError] = useState('');
-    const [saving, setSaving] = useState(false);
+    const [generationError, setGenerationError] = useState('');
     const [localLessons, setLocalLessons] = useState(lessons);
 
     useEffect(() => {
         setLocalLessons(lessons);
     }, [lessons]);
 
-    const pollIntervalMs = 3000;
-
     const startGeneration = useCallback(
         async (e) => {
             e.preventDefault();
             if (!auth?.user) {
-                setJobError('Sign in to generate a lesson.');
-                setJobStatus('');
+                setGenerationError('Sign in to generate a lesson.');
                 return;
             }
-            setJobError('');
-            setJobStatus('Submitting…');
-            setJobId('');
+            setGenerationError('');
             try {
                 const res = await window.axios.post('/tutor-api/generate-lesson', {
                     requirement,
                     language,
                     pdfContent: pdfContent.trim() || undefined,
+                    pdfPageImages: pdfPageImages.length > 0 ? pdfPageImages : undefined,
                     enableWebSearch,
                     enableImageGeneration,
                     enableVideoGeneration,
@@ -51,11 +59,10 @@ export default function Home({ healthUrl, lessons = [], languageOptions = [] }) 
                 if (!data.success) {
                     throw new Error(data.error || 'Request failed');
                 }
-                setJobId(data.jobId);
-                setJobStatus(data.status || 'queued');
+                const path = typeof data.previewPath === 'string' ? data.previewPath : `/generation/${data.jobId}`;
+                router.visit(path);
             } catch (err) {
-                setJobStatus('');
-                setJobError(err.response?.data?.error || err.message || 'Failed');
+                setGenerationError(err.response?.data?.error || err.message || 'Failed');
             }
         },
         [
@@ -67,63 +74,10 @@ export default function Home({ healthUrl, lessons = [], languageOptions = [] }) 
             enableWebSearch,
             language,
             pdfContent,
+            pdfPageImages,
             requirement,
         ],
     );
-
-    useEffect(() => {
-        if (!jobId || !auth?.user) {
-            return undefined;
-        }
-        const id = jobId;
-        const t = setInterval(async () => {
-            try {
-                const res = await window.axios.get(`/api/generate-lesson/${id}`);
-                const data = res.data;
-                if (!data.success) {
-                    clearInterval(t);
-                    setJobError(data.error || 'Poll failed');
-                    setJobStatus('');
-                    return;
-                }
-                setJobStatus(data.status);
-                if (data.status === 'failed') {
-                    clearInterval(t);
-                    setJobError(data.error || 'Generation failed');
-                }
-                if (data.status === 'completed') {
-                    clearInterval(t);
-                }
-            } catch (err) {
-                clearInterval(t);
-                setJobError(err.response?.data?.error || err.message || 'Poll error');
-                setJobStatus('');
-            }
-        }, pollIntervalMs);
-        return () => clearInterval(t);
-    }, [jobId, pollIntervalMs, auth?.user]);
-
-    const saveToLibrary = useCallback(async () => {
-        if (!auth?.user || !jobId) {
-            return;
-        }
-        setSaving(true);
-        setJobError('');
-        try {
-            const res = await window.axios.post('/tutor-api/lessons/import-from-job', { jobId });
-            const data = res.data;
-            if (!data.success) {
-                throw new Error(data.error || 'Import failed');
-            }
-            if (data.studioUrl) {
-                router.visit(data.studioUrl);
-            }
-        } catch (err) {
-            setJobError(err.response?.data?.error || err.message || 'Import failed');
-        } finally {
-            setSaving(false);
-        }
-    }, [auth?.user, jobId]);
 
     async function onPdfFile(ev) {
         if (!auth?.user) {
@@ -150,15 +104,29 @@ export default function Home({ healthUrl, lessons = [], languageOptions = [] }) 
             });
             if (res.data?.success && typeof res.data.text === 'string') {
                 setPdfContent(res.data.text);
+                if (Array.isArray(res.data.pageImages) && res.data.pageImages.length > 0) {
+                    setPdfPageImages(res.data.pageImages);
+                } else {
+                    setPdfPageImages([]);
+                }
                 const meta = res.data.meta || {};
                 const parts = [];
                 if (typeof meta.pages === 'number') {
                     parts.push(`${meta.pages} page(s)`);
                 }
+                if (typeof meta.pageImageCount === 'number' && meta.pageImageCount > 0) {
+                    parts.push(`${meta.pageImageCount} page preview image(s) for AI vision`);
+                }
                 if (meta.truncated) {
                     parts.push('text truncated to server limit');
                 }
-                setPdfFileNote(parts.length ? `Extracted (${parts.join(' · ')}). Review “Source text” below.` : '');
+                const diag = typeof meta.pageImageDiagnostic === 'string' ? meta.pageImageDiagnostic : null;
+                const visionWarn =
+                    diag && (meta.pageImageCount === 0 || !meta.pageImageCount)
+                        ? formatPdfVisionDiagnostic(diag)
+                        : '';
+                const baseNote = parts.length ? `Extracted (${parts.join(' · ')}). Review “Source text” below.` : '';
+                setPdfFileNote([baseNote, visionWarn].filter(Boolean).join(' '));
             }
         } catch (err) {
             const msg = err.response?.data?.error || 'PDF extraction failed. Paste text into “Source text” instead.';
@@ -432,34 +400,7 @@ export default function Home({ healthUrl, lessons = [], languageOptions = [] }) 
                                 </button>
                             </form>
 
-                            {jobId ? (
-                                <div className="mt-6 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-                                    <p className="text-sm text-zinc-700">
-                                        Job <code className="rounded bg-white px-1 text-xs">{jobId}</code>
-                                    </p>
-                                    <p className="mt-1 text-sm font-medium capitalize text-zinc-900">{jobStatus}</p>
-                                    {jobStatus === 'completed' && auth?.user ? (
-                                        <button
-                                            type="button"
-                                            disabled={saving}
-                                            onClick={saveToLibrary}
-                                            className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
-                                        >
-                                            {saving ? 'Saving…' : 'Save to library & open studio'}
-                                        </button>
-                                    ) : null}
-                                    {jobStatus === 'completed' && !auth?.user ? (
-                                        <p className="mt-2 text-sm text-zinc-600">
-                                            <Link href="/login" className="text-indigo-600 underline">
-                                                Log in
-                                            </Link>{' '}
-                                            and regenerate to import into your library.
-                                        </p>
-                                    ) : null}
-                                </div>
-                            ) : null}
-
-                            {jobError ? <p className="mt-4 text-sm text-red-600">{jobError}</p> : null}
+                            {generationError ? <p className="mt-4 text-sm text-red-600">{generationError}</p> : null}
                         </section>
                     </div>
                 </div>

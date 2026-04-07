@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers\Web;
 
-use App\Http\Controllers\Controller;
 use App\Http\Concerns\ResolvesPublicBaseUrl;
+use App\Http\Controllers\Controller;
 use App\Services\LessonGeneration\LessonGenerationService;
 use App\Support\ApiJson;
 use Illuminate\Http\JsonResponse;
@@ -31,7 +31,10 @@ class LessonGenerationWebController extends Controller
             return ApiJson::success([
                 'jobId' => $job->id,
                 'status' => $job->status,
+                'phase' => $job->phase,
+                'progress' => $job->progress,
                 'pollUrl' => $pollUrl,
+                'previewPath' => '/generation/'.$job->id,
                 'pollIntervalMs' => 3000,
             ], 202);
         } catch (\InvalidArgumentException $e) {

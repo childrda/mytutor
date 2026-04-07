@@ -15,6 +15,9 @@ function buildPublishPayload(lessonId, lessonForm, sceneRows) {
         meta: {
             studioMode: lessonForm.meta?.studioMode,
             generatedAgents: Array.isArray(lessonForm.meta?.generatedAgents) ? lessonForm.meta.generatedAgents : [],
+            ...(lessonForm.meta?.classroomRoles && typeof lessonForm.meta.classroomRoles === 'object'
+                ? { classroomRoles: lessonForm.meta.classroomRoles }
+                : {}),
         },
     };
 

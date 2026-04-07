@@ -43,6 +43,9 @@ class ParsePdfTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonPath('meta.pages', 1)
             ->assertJsonPath('meta.truncated', false);
+        $this->assertIsArray($res->json('pageImages'));
+        $this->assertIsInt($res->json('meta.pageImageCount'));
+        $this->assertArrayHasKey('pageImageDiagnostic', $res->json('meta') ?? []);
         $this->assertStringContainsString('Hello Phase5 fixture', (string) $res->json('text'));
     }
 

@@ -61,6 +61,47 @@ class GeneratedMediaStorage
         ];
     }
 
+    /**
+     * Content-addressed store: same fingerprint reuses the existing file (TTS cache, etc.).
+     *
+     * @param  callable(): string  $binaryFactory
+     * @return array{relativePath: string, url: string, cacheHit: bool}
+     */
+    public function getOrStoreFingerprint(string $subdir, string $fingerprintMaterial, string $extension, callable $binaryFactory): array
+    {
+        $subdir = $this->validateKind($subdir);
+        $extension = $this->normalizeExtension($extension);
+        $hash = hash('sha256', $fingerprintMaterial);
+        $shard = substr($hash, 0, 2).'/'.substr($hash, 2, 2);
+        $relative = $this->pathPrefix.'/'.$subdir.'/'.$shard.'/'.$hash.'.'.$extension;
+
+        $disk = $this->disk();
+        if ($disk->exists($relative)) {
+            return [
+                'relativePath' => $relative,
+                'url' => $disk->url($relative),
+                'cacheHit' => true,
+            ];
+        }
+
+        $binary = $binaryFactory();
+        if ($binary === '') {
+            throw new InvalidArgumentException('Empty binary');
+        }
+
+        $disk->put(
+            $relative,
+            $binary,
+            ['visibility' => 'public'],
+        );
+
+        return [
+            'relativePath' => $relative,
+            'url' => $disk->url($relative),
+            'cacheHit' => false,
+        ];
+    }
+
     private function validateKind(string $kind): string
     {
         $kind = strtolower(trim($kind));

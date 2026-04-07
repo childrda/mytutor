@@ -24,6 +24,7 @@ class Phase22HomeAndImportTest extends TestCase
             ->assertJsonPath('jobId', fn ($id) => is_string($id) && $id !== '');
 
         $jobId = $response->json('jobId');
+        $response->assertJsonPath('previewPath', '/generation/'.$jobId);
         $this->assertSame($user->id, LessonGenerationJob::query()->find($jobId)?->user_id);
     }
 
@@ -34,6 +35,12 @@ class Phase22HomeAndImportTest extends TestCase
             'user_id' => $user->id,
             'status' => 'completed',
             'request' => ['requirement' => 'x', 'language' => 'en'],
+            'classroom_roles' => [
+                'version' => 1,
+                'personas' => [
+                    ['id' => 'p1', 'role' => 'teacher', 'name' => 'Dr. Sam', 'bio' => 'Lead.'],
+                ],
+            ],
             'result' => [
                 'stage' => [
                     'name' => 'Imported title',
@@ -66,6 +73,9 @@ class Phase22HomeAndImportTest extends TestCase
             'user_id' => $user->id,
             'name' => 'Imported title',
         ]);
+        $lesson = TutorLesson::query()->find($lessonId);
+        $this->assertIsArray($lesson?->meta);
+        $this->assertSame('Dr. Sam', $lesson->meta['classroomRoles']['personas'][0]['name'] ?? null);
         $this->assertDatabaseCount('tutor_scenes', 1);
     }
 

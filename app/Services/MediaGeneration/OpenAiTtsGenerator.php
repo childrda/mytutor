@@ -30,6 +30,7 @@ final class OpenAiTtsGenerator
         ?string $model = null,
         ?string $format = null,
         ?string $overrideApiKey = null,
+        ?float $speed = null,
     ): array {
         $text = trim($text);
         $maxChars = max(1, min(4096, (int) config('tutor.tts_generation.max_input_chars', 4096)));
@@ -82,16 +83,24 @@ final class OpenAiTtsGenerator
         $timeout = (float) config('tutor.tts_generation.timeout', 120);
         $url = $baseUrl.'/audio/speech';
 
+        $payload = [
+            'model' => $model,
+            'input' => $text,
+            'voice' => $voice,
+            'response_format' => $format,
+        ];
+        if ($speed !== null) {
+            $sp = round(min(4.0, max(0.25, $speed)), 2);
+            if (abs($sp - 1.0) > 0.001) {
+                $payload['speed'] = $sp;
+            }
+        }
+
         try {
             $response = Http::withToken($apiKey)
                 ->timeout($timeout)
                 ->connectTimeout(min(30.0, $timeout))
-                ->post($url, [
-                    'model' => $model,
-                    'input' => $text,
-                    'voice' => $voice,
-                    'response_format' => $format,
-                ]);
+                ->post($url, $payload);
         } catch (Throwable $e) {
             throw new TtsGenerationException(
                 'TTS provider request failed: '.$e->getMessage(),

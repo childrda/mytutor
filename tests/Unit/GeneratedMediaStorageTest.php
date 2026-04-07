@@ -62,4 +62,31 @@ class GeneratedMediaStorageTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         (new GeneratedMediaStorage('public', 'g', $mock))->storeBinary('../evil', 'bin', 'x');
     }
+
+    #[Test]
+    public function get_or_store_fingerprint_writes_once_and_hits_on_same_key(): void
+    {
+        $mock = Mockery::mock(Filesystem::class);
+        $mock->shouldReceive('exists')
+            ->twice()
+            ->andReturn(false, true);
+        $mock->shouldReceive('put')
+            ->once()
+            ->withArgs(function (string $path, string $contents, array $options): bool {
+                return str_contains($path, 'generated-test/tts-cache/')
+                    && str_contains($path, '.mp3')
+                    && $contents === 'bytes-a'
+                    && ($options['visibility'] ?? null) === 'public';
+            })
+            ->andReturnTrue();
+        $mock->shouldReceive('url')
+            ->twice()
+            ->andReturn('https://app.test/storage/cached.mp3');
+
+        $svc = new GeneratedMediaStorage('public', 'generated-test', $mock);
+        $a = $svc->getOrStoreFingerprint('tts-cache', 'same-key', 'mp3', fn () => 'bytes-a');
+        $this->assertFalse($a['cacheHit']);
+        $b = $svc->getOrStoreFingerprint('tts-cache', 'same-key', 'mp3', fn () => 'bytes-b');
+        $this->assertTrue($b['cacheHit']);
+    }
 }

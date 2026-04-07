@@ -57,6 +57,8 @@ function agentById(registry, id) {
 }
 
 export default function StudioChatPanel({
+    variant = 'studio',
+    className = '',
     lessonId,
     lessonName,
     lessonLanguage,
@@ -66,6 +68,7 @@ export default function StudioChatPanel({
     onLessonAgentIdsChange,
     currentScene,
 }) {
+    const isClassroom = variant === 'classroom';
     const [sessionType, setSessionType] = useState('qa');
     const [messages, setMessages] = useState([]);
     const [composer, setComposer] = useState('');
@@ -330,17 +333,27 @@ export default function StudioChatPanel({
         ]);
     };
 
+    const shellAside = isClassroom
+        ? `flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t border-zinc-800 bg-zinc-950 text-zinc-100 lg:border-l lg:border-t-0`
+        : `flex max-h-[50vh] flex-col border-t border-zinc-200 bg-white lg:max-h-none lg:w-[22rem] lg:shrink-0 lg:border-l lg:border-t-0`;
+
     return (
-        <aside className="flex max-h-[50vh] flex-col border-t border-zinc-200 bg-white lg:max-h-none lg:w-[22rem] lg:shrink-0 lg:border-l lg:border-t-0">
-            <div className="border-b border-zinc-100 px-3 py-2">
-                <h2 className="text-sm font-semibold text-zinc-900">Agents & chat</h2>
-                <p className="text-xs text-zinc-500">Streaming via POST /api/chat (SSE)</p>
+        <aside className={`${shellAside} ${className}`.trim()}>
+            <div className={`border-b px-3 py-2 ${isClassroom ? 'border-zinc-800' : 'border-zinc-100'}`}>
+                <h2 className={`text-sm font-semibold ${isClassroom ? 'text-zinc-100' : 'text-zinc-900'}`}>Agents & chat</h2>
+                <p className={`text-xs ${isClassroom ? 'text-zinc-500' : 'text-zinc-500'}`}>Streaming via POST /api/chat (SSE)</p>
             </div>
 
-            <div className="max-h-40 overflow-y-auto border-b border-zinc-100 px-3 py-2">
-                <p className="text-xs font-medium text-zinc-600">Session</p>
+            <div
+                className={`max-h-40 overflow-y-auto border-b px-3 py-2 ${isClassroom ? 'border-zinc-800' : 'border-zinc-100'}`}
+            >
+                <p className={`text-xs font-medium ${isClassroom ? 'text-zinc-400' : 'text-zinc-600'}`}>Session</p>
                 <select
-                    className="mt-1 w-full rounded-lg border border-zinc-300 px-2 py-1.5 text-sm"
+                    className={`mt-1 w-full rounded-lg border px-2 py-1.5 text-sm ${
+                        isClassroom
+                            ? 'border-zinc-700 bg-zinc-900 text-zinc-100'
+                            : 'border-zinc-300 bg-white text-zinc-900'
+                    }`}
                     value={sessionType}
                     onChange={(e) => setSessionType(e.target.value)}
                 >
@@ -350,7 +363,7 @@ export default function StudioChatPanel({
                         </option>
                     ))}
                 </select>
-                <p className="mt-2 text-xs font-medium text-zinc-600">Active agents</p>
+                <p className={`mt-2 text-xs font-medium ${isClassroom ? 'text-zinc-400' : 'text-zinc-600'}`}>Active agents</p>
                 <ul className="mt-1 space-y-1">
                     {agentRegistry.map((a) => {
                         const custom = generatedAgents.some((g) => g.id === a.id);
@@ -361,19 +374,19 @@ export default function StudioChatPanel({
                                         type="checkbox"
                                         checked={selectedAgentIds.includes(a.id)}
                                         onChange={() => toggleAgent(a.id)}
-                                        className="rounded border-zinc-300"
+                                        className={`rounded ${isClassroom ? 'border-zinc-600' : 'border-zinc-300'}`}
                                     />
                                     <span
                                         className="h-6 w-6 shrink-0 rounded-full"
                                         style={{ backgroundColor: a.color }}
                                         title={a.name}
                                     />
-                                    <span className="truncate text-zinc-800">{a.name}</span>
+                                    <span className={`truncate ${isClassroom ? 'text-zinc-200' : 'text-zinc-800'}`}>{a.name}</span>
                                 </label>
                                 {custom ? (
                                     <button
                                         type="button"
-                                        className="text-xs text-red-600 hover:underline"
+                                        className="text-xs text-red-400 hover:underline"
                                         onClick={() => removeGeneratedAgent(a.id)}
                                     >
                                         ×
@@ -386,19 +399,21 @@ export default function StudioChatPanel({
                 <button
                     type="button"
                     onClick={addGeneratedAgent}
-                    className="mt-2 text-xs font-medium text-indigo-600 hover:underline"
+                    className={`mt-2 text-xs font-medium hover:underline ${isClassroom ? 'text-indigo-400' : 'text-indigo-600'}`}
                 >
                     + Add custom agent
                 </button>
-                <p className="mt-2 text-xs text-zinc-400">
-                    Custom agents are stored in lesson meta (server). Lesson <code className="text-zinc-500">agentIds</code>{' '}
-                    sync with your selection.
+                <p className={`mt-2 text-xs ${isClassroom ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                    Custom agents are stored in lesson meta (server). Lesson{' '}
+                    <code className={isClassroom ? 'text-zinc-400' : 'text-zinc-500'}>agentIds</code> sync with your selection.
                 </p>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
                 {messages.length === 0 ? (
-                    <p className="text-sm text-zinc-500">Ask about this lesson or scene. Messages include scene context.</p>
+                    <p className={`text-sm ${isClassroom ? 'text-zinc-500' : 'text-zinc-500'}`}>
+                        Ask about this lesson or scene. Messages include scene context.
+                    </p>
                 ) : (
                     <ul className="space-y-3">
                         {messages.map((msg) => {
@@ -410,11 +425,19 @@ export default function StudioChatPanel({
                                 <li
                                     key={msg.id}
                                     className={`rounded-lg px-2 py-2 text-sm ${
-                                        msg.role === 'user' ? 'ml-4 bg-indigo-50 text-indigo-950' : 'mr-4 bg-zinc-100 text-zinc-900'
+                                        msg.role === 'user'
+                                            ? isClassroom
+                                                ? 'ml-4 bg-indigo-950/80 text-indigo-100 ring-1 ring-indigo-800/50'
+                                                : 'ml-4 bg-indigo-50 text-indigo-950'
+                                            : isClassroom
+                                              ? 'mr-4 bg-zinc-800/90 text-zinc-100'
+                                              : 'mr-4 bg-zinc-100 text-zinc-900'
                                     }`}
                                 >
                                     {msg.role === 'assistant' ? (
-                                        <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
+                                        <div
+                                            className={`mb-1 flex items-center gap-2 text-xs ${isClassroom ? 'text-zinc-400' : 'text-zinc-500'}`}
+                                        >
                                             <span
                                                 className="h-4 w-4 rounded-full"
                                                 style={{ backgroundColor: agent?.color || '#64748b' }}
@@ -425,13 +448,24 @@ export default function StudioChatPanel({
                                     ) : null}
                                     <div className="whitespace-pre-wrap break-words">{msg.content}</div>
                                     {msg.attachmentNames?.length ? (
-                                        <p className="mt-1 text-xs text-zinc-500">📎 {msg.attachmentNames.join(', ')}</p>
+                                        <p className={`mt-1 text-xs ${isClassroom ? 'text-zinc-500' : 'text-zinc-500'}`}>
+                                            📎 {msg.attachmentNames.join(', ')}
+                                        </p>
                                     ) : null}
                                     {msg.actions && msg.actions.length > 0 ? (
-                                        <ul className="mt-2 space-y-1 border-t border-zinc-200 pt-2">
+                                        <ul
+                                            className={`mt-2 space-y-1 border-t pt-2 ${isClassroom ? 'border-zinc-600' : 'border-zinc-200'}`}
+                                        >
                                             {msg.actions.map((act, i) => (
-                                                <li key={i} className="font-mono text-xs text-amber-800">
-                                                    <span className="font-sans font-medium text-zinc-600">Action: </span>
+                                                <li
+                                                    key={i}
+                                                    className={`font-mono text-xs ${isClassroom ? 'text-amber-200/90' : 'text-amber-800'}`}
+                                                >
+                                                    <span
+                                                        className={`font-sans font-medium ${isClassroom ? 'text-zinc-400' : 'text-zinc-600'}`}
+                                                    >
+                                                        Action:{' '}
+                                                    </span>
                                                     {JSON.stringify(act)}
                                                 </li>
                                             ))}
@@ -445,12 +479,22 @@ export default function StudioChatPanel({
                 <div ref={listEndRef} />
             </div>
 
-            {error ? <p className="px-3 py-1 text-xs text-red-600">{error}</p> : null}
-            {status ? <p className="px-3 py-1 text-xs text-zinc-500">{status}</p> : null}
+            {error ? (
+                <p className={`px-3 py-1 text-xs ${isClassroom ? 'text-red-400' : 'text-red-600'}`}>{error}</p>
+            ) : null}
+            {status ? (
+                <p className={`px-3 py-1 text-xs ${isClassroom ? 'text-zinc-500' : 'text-zinc-500'}`}>{status}</p>
+            ) : null}
 
-            <div className="border-t border-zinc-100 p-3">
+            <div className={`border-t p-3 ${isClassroom ? 'border-zinc-800' : 'border-zinc-100'}`}>
                 <div className="mb-2 flex flex-wrap gap-2">
-                    <label className="cursor-pointer rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50">
+                    <label
+                        className={`cursor-pointer rounded border px-2 py-1 text-xs ${
+                            isClassroom
+                                ? 'border-zinc-600 text-zinc-300 hover:bg-zinc-800'
+                                : 'border-zinc-300 text-zinc-600 hover:bg-zinc-50'
+                        }`}
+                    >
                         Attach
                         <input type="file" className="hidden" multiple onChange={onPickFiles} />
                     </label>
@@ -458,17 +502,27 @@ export default function StudioChatPanel({
                         <button
                             type="button"
                             onClick={stopStream}
-                            className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50"
+                            className={`rounded border px-2 py-1 text-xs font-medium ${
+                                isClassroom
+                                    ? 'border-red-900/60 text-red-300 hover:bg-red-950/50'
+                                    : 'border-red-200 text-red-700 hover:bg-red-50'
+                            }`}
                         >
                             Stop
                         </button>
                     ) : null}
                 </div>
                 {attachments.length > 0 ? (
-                    <p className="mb-2 text-xs text-zinc-500">{attachments.map((a) => a.name).join(', ')}</p>
+                    <p className={`mb-2 text-xs ${isClassroom ? 'text-zinc-500' : 'text-zinc-500'}`}>
+                        {attachments.map((a) => a.name).join(', ')}
+                    </p>
                 ) : null}
                 <textarea
-                    className="w-full resize-none rounded-lg border border-zinc-300 px-3 py-2 text-sm"
+                    className={`w-full resize-none rounded-lg border px-3 py-2 text-sm ${
+                        isClassroom
+                            ? 'border-zinc-700 bg-zinc-900 text-zinc-100 placeholder:text-zinc-500'
+                            : 'border-zinc-300 bg-white text-zinc-900'
+                    }`}
                     rows={3}
                     placeholder="Message…"
                     value={composer}
@@ -484,11 +538,15 @@ export default function StudioChatPanel({
                     type="button"
                     onClick={send}
                     disabled={!!status}
-                    className="mt-2 w-full rounded-lg bg-zinc-900 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                    className={`mt-2 w-full rounded-lg py-2 text-sm font-medium disabled:opacity-50 ${
+                        isClassroom
+                            ? 'bg-indigo-600 text-white hover:bg-indigo-500'
+                            : 'bg-zinc-900 text-white hover:bg-zinc-800'
+                    }`}
                 >
                     Send
                 </button>
-                <p className="mt-1 text-xs text-zinc-400">⌘/Ctrl + Enter to send</p>
+                <p className={`mt-1 text-xs ${isClassroom ? 'text-zinc-500' : 'text-zinc-400'}`}>⌘/Ctrl + Enter to send</p>
             </div>
         </aside>
     );

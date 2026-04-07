@@ -68,6 +68,9 @@ class StubGenerateController extends Controller
         $voice = isset($body['voice']) && is_string($body['voice']) ? trim($body['voice']) : null;
         $model = isset($body['model']) && is_string($body['model']) ? trim($body['model']) : null;
         $format = isset($body['format']) && is_string($body['format']) ? trim($body['format']) : null;
+        $speedRaw = $body['speed'] ?? null;
+        $speed = is_numeric($speedRaw) ? (float) $speedRaw : 1.0;
+        $speed = round(max(0.25, min(4.0, $speed)), 3);
         $clientKey = isset($body['apiKey']) && is_string($body['apiKey']) ? trim($body['apiKey']) : '';
 
         $requiresKey = ($body['requiresApiKey'] ?? true) !== false;
@@ -78,8 +81,24 @@ class StubGenerateController extends Controller
 
         $overrideKey = $clientKey !== '' ? $clientKey : null;
 
+        $voiceKey = $voice !== null && $voice !== '' ? strtolower($voice) : (string) config('tutor.tts_generation.voice', 'alloy');
+        $modelKey = $model !== null && $model !== '' ? $model : (string) config('tutor.tts_generation.model', 'tts-1');
+        $formatKey = $format !== null && $format !== '' ? strtolower($format) : (string) config('tutor.tts_generation.format', 'mp3');
+        $fingerprint = json_encode([
+            'v' => 2,
+            't' => trim($text),
+            'voice' => $voiceKey,
+            'model' => $modelKey,
+            'format' => $formatKey,
+            'speed' => $speed,
+        ], JSON_UNESCAPED_UNICODE);
+
         try {
-            $out = $generator->generate($text, $voice, $model, $format, $overrideKey);
+            $stored = $mediaStorage->getOrStoreFingerprint('tts-cache', $fingerprint, $formatKey, function () use ($generator, $text, $voice, $model, $format, $overrideKey, $speed) {
+                $out = $generator->generate($text, $voice, $model, $format, $overrideKey, $speed);
+
+                return $out['binary'];
+            });
         } catch (TtsGenerationException $e) {
             return ApiJson::error($e->errorCode, $e->httpStatus, $e->getMessage());
         } catch (Throwable $e) {
@@ -88,20 +107,22 @@ class StubGenerateController extends Controller
             return ApiJson::error(ApiJson::INTERNAL_ERROR, 500, 'Unexpected error during text-to-speech');
         }
 
-        try {
-            $stored = $mediaStorage->storeBinary('tts', $out['format'], $out['binary']);
-        } catch (Throwable $e) {
-            report($e);
-
-            return ApiJson::error(ApiJson::GENERATION_FAILED, 500, 'Failed to store generated audio');
-        }
+        $mime = match ($formatKey) {
+            'mp3' => 'audio/mpeg',
+            'opus' => 'audio/opus',
+            'aac' => 'audio/aac',
+            'flac' => 'audio/flac',
+            'wav' => 'audio/wav',
+            default => 'application/octet-stream',
+        };
 
         return ApiJson::success([
             'provider' => 'openai-tts',
             'url' => $stored['url'],
             'path' => $stored['relativePath'],
-            'mime' => $out['mime'],
-            'format' => $out['format'],
+            'mime' => $mime,
+            'format' => $formatKey,
+            'cached' => $stored['cacheHit'],
         ]);
     }
 }

@@ -3,7 +3,9 @@
 namespace App\Jobs;
 
 use App\Models\LessonGenerationJob;
-use App\Services\Ai\LlmClient;
+use App\Services\LessonGeneration\OrchestratedLessonGenerationService;
+use App\Support\LessonGeneration\LessonGenerationPhases;
+use App\Support\LessonGeneration\PipelineStepException;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -12,6 +14,9 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Str;
 use Throwable;
 
+/**
+ * Dispatches the Phase 7.3 orchestrated pipeline (sequential LLM calls).
+ */
 class ProcessLessonGenerationJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
@@ -22,84 +27,34 @@ class ProcessLessonGenerationJob implements ShouldQueue
         public string $jobUlid,
     ) {}
 
-    public function handle(): void
+    public function handle(OrchestratedLessonGenerationService $pipeline): void
     {
         $record = LessonGenerationJob::query()->find($this->jobUlid);
         if (! $record) {
             return;
         }
 
-        $record->update(['status' => 'running']);
-
-        $req = $record->request;
-        $requirement = is_array($req) ? (string) ($req['requirement'] ?? '') : '';
-        $language = is_array($req) ? (string) ($req['language'] ?? 'en') : 'en';
-        $pdf = is_array($req) && isset($req['pdfContent']) ? (string) $req['pdfContent'] : '';
-        $pdfExcerpt = $pdf !== '' ? mb_substr($pdf, 0, 12000) : '';
-
-        $baseUrl = (string) config('tutor.default_chat.base_url');
-        $apiKey = (string) config('tutor.default_chat.api_key');
-        $model = (string) config('tutor.default_chat.model');
-
-        if ($apiKey === '') {
-            $record->update([
-                'status' => 'failed',
-                'error' => 'No LLM API key configured. Set TUTOR_DEFAULT_LLM_API_KEY or OPENAI_API_KEY.',
-            ]);
-
-            return;
-        }
-
-        $system = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with keys: '
-            .'stage (object: id empty string, name, description, language), '
-            .'scenes (array of 3-8 items). Each scene: id (string), type ("slide"|"quiz"), title, order (int), content. '
-            .'For type "slide", content MUST be: {type:"slide", canvas:{title (string), width:1000, height:562.5, elements:[...]}}. '
-            .'canvas.elements MUST have at least 2 entries. Every element MUST include the string field type with the exact value "text" (required for rendering). '
-            .'Shape: {type:"text", id (string), x (number), y (number), width (number), height (number), fontSize (number), text (string with lesson copy, use • for bullets)}. '
-            .'Do not omit type or use other type names. Put real teaching content in text fields, not placeholders. '
-            .'Optional fallbacks we also read: content.body (string), content.bullets (string array), scene-level notes (string) on the scene object. '
-            .'For type "quiz", content: {type:"quiz", questions:[{id, type:"single"|"multiple", prompt, points, options:[{id,label}], correctIds:[], gradingHint}]}. '
-            .'Use language: '.$language.'.';
-
-        $user = "Topic / requirement:\n".$requirement;
-        if ($pdfExcerpt !== '') {
-            $user .= "\n\nSource excerpt:\n".$pdfExcerpt;
-        }
-
         try {
-            $raw = LlmClient::chat($baseUrl, $apiKey, $model, [
-                ['role' => 'system', 'content' => $system],
-                ['role' => 'user', 'content' => $user],
-            ], 0.4, 8192);
-            $raw = trim($raw);
-            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+            $pipeline->run($record);
+        } catch (PipelineStepException $e) {
+            $this->markPipelineFailed($record, $e->getMessage(), $e->step);
         } catch (Throwable $e) {
-            $record->update([
-                'status' => 'failed',
-                'error' => $e->getMessage(),
-            ]);
-
-            return;
+            $this->markPipelineFailed($record, $e->getMessage(), 'unknown');
         }
+    }
 
-        $stage = is_array($decoded['stage'] ?? null) ? $decoded['stage'] : [];
-        $rawScenes = is_array($decoded['scenes'] ?? null) ? $decoded['scenes'] : [];
-        $stageDesc = is_string($stage['description'] ?? null) ? trim($stage['description']) : '';
-        $scenes = [];
-        foreach ($rawScenes as $row) {
-            $scenes[] = is_array($row)
-                ? self::enrichSlideScene($row, $stageDesc, $requirement)
-                : $row;
-        }
-        $id = (string) Str::ulid();
-        $stage['id'] = $id;
-
+    private function markPipelineFailed(LessonGenerationJob $record, string $message, string $step): void
+    {
+        $record->refresh();
+        $current = is_array($record->result) ? $record->result : [];
         $record->update([
-            'status' => 'completed',
-            'result' => [
-                'stage' => $stage,
-                'scenes' => $scenes,
-            ],
+            'status' => 'failed',
+            'phase' => LessonGenerationPhases::FAILED,
+            'error' => $message,
+            'result' => array_merge($current, [
+                'pipelineFailed' => true,
+                'pipelineFailedStep' => $step,
+            ]),
         ]);
     }
 
@@ -109,7 +64,7 @@ class ProcessLessonGenerationJob implements ShouldQueue
      * @param  array<string, mixed>  $scene
      * @return array<string, mixed>
      */
-    private static function enrichSlideScene(array $scene, string $stageDescription, string $requirement): array
+    public static function enrichSlideScene(array $scene, string $stageDescription, string $requirement): array
     {
         $type = $scene['type'] ?? 'slide';
         if ($type !== 'slide') {
@@ -138,6 +93,33 @@ class ProcessLessonGenerationJob implements ShouldQueue
         $elements = [];
         foreach ($rawElements as $el) {
             if (! is_array($el)) {
+                continue;
+            }
+            $typeRaw = strtolower(trim((string) ($el['type'] ?? '')));
+            if ($typeRaw === 'card') {
+                $card = self::normalizeCardElement($el);
+                if ($card !== null) {
+                    $elements[] = $card;
+                }
+
+                continue;
+            }
+            if ($typeRaw === 'image') {
+                $src = isset($el['src']) && is_string($el['src']) ? trim($el['src']) : '';
+                if ($src === '') {
+                    continue;
+                }
+                $elements[] = [
+                    'type' => 'image',
+                    'id' => isset($el['id']) && is_string($el['id']) && $el['id'] !== '' ? $el['id'] : (string) Str::ulid(),
+                    'x' => isset($el['x']) && is_numeric($el['x']) ? (int) $el['x'] : 40,
+                    'y' => isset($el['y']) && is_numeric($el['y']) ? (int) $el['y'] : 175,
+                    'width' => isset($el['width']) && is_numeric($el['width']) ? max(80, (int) $el['width']) : 440,
+                    'height' => isset($el['height']) && is_numeric($el['height']) ? max(60, (int) $el['height']) : 320,
+                    'src' => $src,
+                    'alt' => isset($el['alt']) && is_string($el['alt']) ? trim($el['alt']) : '',
+                ];
+
                 continue;
             }
             $text = '';
@@ -231,5 +213,63 @@ class ProcessLessonGenerationJob implements ShouldQueue
         $scene['content'] = $content;
 
         return $scene;
+    }
+
+    /**
+     * @param  array<string, mixed>  $el
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeCardElement(array $el): ?array
+    {
+        $title = isset($el['title']) && is_string($el['title']) ? trim($el['title']) : '';
+        $body = isset($el['body']) && is_string($el['body']) ? trim($el['body']) : '';
+        $caption = isset($el['caption']) && is_string($el['caption']) ? mb_substr(trim($el['caption']), 0, 200) : '';
+
+        $bullets = [];
+        if (isset($el['bullets']) && is_array($el['bullets'])) {
+            foreach ($el['bullets'] as $b) {
+                if (is_string($b) && trim($b) !== '' && count($bullets) < 8) {
+                    $bullets[] = trim($b);
+                }
+            }
+        }
+
+        if ($title === '' && $body === '' && $bullets === [] && $caption === '') {
+            return null;
+        }
+        if ($title === '') {
+            $title = 'Key point';
+        }
+
+        $allowedAccents = ['indigo', 'emerald', 'amber', 'rose', 'violet', 'sky', 'slate'];
+        $accent = strtolower(trim((string) ($el['accent'] ?? 'indigo')));
+        if (! in_array($accent, $allowedAccents, true)) {
+            $accent = 'indigo';
+        }
+
+        $icon = '';
+        if (isset($el['icon']) && is_string($el['icon'])) {
+            $icon = trim($el['icon']);
+            $icon = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $icon) ?? '';
+            if (str_contains($icon, '<') || str_contains($icon, '>')) {
+                $icon = '';
+            }
+            $icon = mb_substr($icon, 0, 8);
+        }
+
+        return [
+            'type' => 'card',
+            'id' => isset($el['id']) && is_string($el['id']) && $el['id'] !== '' ? $el['id'] : (string) Str::ulid(),
+            'x' => isset($el['x']) && is_numeric($el['x']) ? (int) $el['x'] : 48,
+            'y' => isset($el['y']) && is_numeric($el['y']) ? (int) $el['y'] : 196,
+            'width' => isset($el['width']) && is_numeric($el['width']) ? max(120, (int) $el['width']) : 290,
+            'height' => isset($el['height']) && is_numeric($el['height']) ? max(100, (int) $el['height']) : 320,
+            'title' => $title,
+            'body' => $body,
+            'bullets' => $bullets,
+            'caption' => $caption,
+            'accent' => $accent,
+            'icon' => $icon,
+        ];
     }
 }

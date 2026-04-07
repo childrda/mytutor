@@ -12,10 +12,10 @@ use App\Http\Controllers\Api\ProxyMediaController;
 use App\Http\Controllers\Api\PublishedLessonController;
 use App\Http\Controllers\Api\PublishedLessonMediaController;
 use App\Http\Controllers\Api\QuizGradeController;
-use App\Http\Controllers\Api\TranscriptionController;
 use App\Http\Controllers\Api\StudioSceneGenerationController;
-use App\Http\Controllers\Api\VideoGenerationController;
+use App\Http\Controllers\Api\TranscriptionController;
 use App\Http\Controllers\Api\VerifyIntegrationController;
+use App\Http\Controllers\Api\VideoGenerationController;
 use App\Http\Controllers\Api\WebSearchController;
 use Illuminate\Support\Facades\Route;
 
@@ -44,14 +44,19 @@ Route::get('/published-lessons/{lessonId}/files/{path}', [PublishedLessonMediaCo
 
 Route::middleware(['auth:sanctum', 'throttle.tutor:generate_lesson'])->group(function (): void {
     Route::post('/generate-lesson', [LessonGenerationController::class, 'store'])->name('api.generate-lesson.store');
+});
+Route::middleware(['auth:sanctum', 'throttle.tutor:generate_lesson_poll'])->group(function (): void {
     Route::get('/generate-lesson/{jobId}', [LessonGenerationController::class, 'show'])->name('api.generate-lesson.show');
+});
+
+Route::middleware(['auth:sanctum', 'throttle.generate'])->group(function (): void {
+    Route::post('/generate/tts', [StubGenerateController::class, 'tts']);
 });
 
 Route::middleware(['throttle.generate'])->prefix('generate')->group(function (): void {
     Route::post('/image', [StubGenerateController::class, 'image']);
     Route::post('/video', [VideoGenerationController::class, 'store']);
     Route::get('/video/{jobId}', [VideoGenerationController::class, 'show']);
-    Route::post('/tts', [StubGenerateController::class, 'tts']);
     Route::post('/scene-outlines-stream', [StudioSceneGenerationController::class, 'sceneOutlinesStream']);
     Route::post('/scene-actions', [StudioSceneGenerationController::class, 'sceneActions']);
     Route::post('/scene-content', [StudioSceneGenerationController::class, 'sceneContent']);

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Documents\PdfPageImageExtractor;
 use App\Services\Documents\PdfTextExtractionException;
 use App\Services\Documents\PdfTextExtractor;
 use App\Support\ApiJson;
@@ -12,7 +13,7 @@ use Throwable;
 
 class ParsePdfController extends Controller
 {
-    public function __invoke(Request $request, PdfTextExtractor $extractor): JsonResponse
+    public function __invoke(Request $request, PdfTextExtractor $extractor, PdfPageImageExtractor $pageImages): JsonResponse
     {
         if (! $request->hasFile('file')) {
             return ApiJson::error(ApiJson::MISSING_REQUIRED_FIELD, 400, 'file is required');
@@ -54,13 +55,20 @@ class ParsePdfController extends Controller
             return ApiJson::error(ApiJson::INTERNAL_ERROR, 500, 'Unexpected error during PDF parsing');
         }
 
+        $raster = $pageImages->rasterizeFirstPages($path, $fileSize);
+        $rasterized = $raster['images'];
+        $pageImageDiagnostic = $raster['diagnostic'];
+
         return ApiJson::success([
             'text' => $out['text'],
+            'pageImages' => $rasterized,
             'meta' => [
                 'pages' => $out['pages'],
                 'chars' => mb_strlen($out['text']),
                 'truncated' => $out['truncated'],
                 'fileSizeBytes' => $out['fileSizeBytes'],
+                'pageImageCount' => count($rasterized),
+                'pageImageDiagnostic' => $pageImageDiagnostic,
             ],
         ]);
     }

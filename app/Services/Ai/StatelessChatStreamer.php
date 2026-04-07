@@ -21,7 +21,7 @@ use Throwable;
  *
  * When {@see ChatToolRegistry} defines tools, they are sent to the model; tool calls are
  * executed allowlist-only, emitted as {@see ChatSseProtocol::TYPE_ACTION}, then a follow-up
- * completion is streamed with tool_choice=none (Phase 3.3).
+ * completion is streamed with the same tools plus tool_choice=none (Phase 3.3).
  */
 class StatelessChatStreamer
 {
@@ -249,8 +249,12 @@ class StatelessChatStreamer
             'model' => $model,
             'stream' => true,
             'messages' => $followUpMessages,
-            'tool_choice' => 'none',
         ];
+        // OpenAI rejects tool_choice without a tools array; keep definitions and forbid another tool round.
+        if ($usesTools) {
+            $followPayload['tools'] = $toolsDef;
+            $followPayload['tool_choice'] = 'none';
+        }
 
         try {
             $response2 = $client->post($url, [
