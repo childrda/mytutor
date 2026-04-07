@@ -104,33 +104,76 @@ export default function Home({ healthUrl, lessons = [], languageOptions = [] }) 
             });
             if (res.data?.success && typeof res.data.text === 'string') {
                 setPdfContent(res.data.text);
-                if (Array.isArray(res.data.pageImages) && res.data.pageImages.length > 0) {
-                    setPdfPageImages(res.data.pageImages);
-                } else {
-                    setPdfPageImages([]);
+                let pageImages = Array.isArray(res.data.pageImages) ? res.data.pageImages : [];
+                const fromServer = pageImages.length > 0;
+                if (!fromServer) {
+                    try {
+                        const { renderPdfPagesToBase64 } = await import('../lib/pdfClient.js');
+                        const clientImages = await renderPdfPagesToBase64(file, 4);
+                        if (clientImages.length > 0) {
+                            pageImages = clientImages;
+                        }
+                    } catch (renderErr) {
+                        console.warn('PDF page rendering in browser failed:', renderErr);
+                    }
                 }
+                setPdfPageImages(pageImages);
+
                 const meta = res.data.meta || {};
                 const parts = [];
                 if (typeof meta.pages === 'number') {
                     parts.push(`${meta.pages} page(s)`);
                 }
-                if (typeof meta.pageImageCount === 'number' && meta.pageImageCount > 0) {
-                    parts.push(`${meta.pageImageCount} page preview image(s) for AI vision`);
+                if (pageImages.length > 0) {
+                    parts.push(
+                        fromServer
+                            ? `${pageImages.length} page preview image(s) for AI vision`
+                            : `${pageImages.length} page preview image(s) for AI vision (rendered in your browser)`,
+                    );
                 }
                 if (meta.truncated) {
                     parts.push('text truncated to server limit');
                 }
                 const diag = typeof meta.pageImageDiagnostic === 'string' ? meta.pageImageDiagnostic : null;
                 const visionWarn =
-                    diag && (meta.pageImageCount === 0 || !meta.pageImageCount)
+                    pageImages.length === 0 && diag && (meta.pageImageCount === 0 || !meta.pageImageCount)
                         ? formatPdfVisionDiagnostic(diag)
                         : '';
                 const baseNote = parts.length ? `Extracted (${parts.join(' · ')}). Review “Source text” below.` : '';
                 setPdfFileNote([baseNote, visionWarn].filter(Boolean).join(' '));
             }
         } catch (err) {
-            const msg = err.response?.data?.error || 'PDF extraction failed. Paste text into “Source text” instead.';
-            setPdfFileNote(msg);
+            const serverMsg =
+                err.response?.data?.error || err.message || 'PDF extraction failed. Paste text into “Source text” instead.';
+            try {
+                const { extractPdfTextClient, renderPdfPagesToBase64 } = await import(
+                    '../lib/pdfClient.js'
+                );
+                const text = await extractPdfTextClient(file, 100_000).catch(() => '');
+                let imgs = [];
+                try {
+                    imgs = await renderPdfPagesToBase64(file, 4);
+                } catch {
+                    imgs = [];
+                }
+                if (text.trim() !== '' || imgs.length > 0) {
+                    setPdfContent(text);
+                    setPdfPageImages(imgs);
+                    const bits = [`Extracted in browser (${file.name}).`];
+                    if (text.trim() !== '') {
+                        bits.push(`${text.length.toLocaleString()} characters.`);
+                    }
+                    if (imgs.length > 0) {
+                        bits.push(`${imgs.length} page preview image(s) for AI vision.`);
+                    }
+                    bits.push(`Server: ${serverMsg}`);
+                    setPdfFileNote(bits.join(' '));
+                    return;
+                }
+            } catch (clientErr) {
+                console.warn('Client PDF fallback failed:', clientErr);
+            }
+            setPdfFileNote(serverMsg);
         }
     }
 

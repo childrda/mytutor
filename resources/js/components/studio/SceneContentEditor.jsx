@@ -263,6 +263,33 @@ function cardDisplayLines(el) {
 
 /** Pixel-accurate slide canvas (1000×562.5 space); parent supplies scale via CSS transform. */
 export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotlightRect }) {
+    let spotlightBounds = null;
+    if (readOnly && spotlightElementId && Array.isArray(canvas.elements)) {
+        const hit = canvas.elements.find((e) => e.id === spotlightElementId);
+        if (hit) {
+            spotlightBounds = {
+                ex: hit.x ?? 0,
+                ey: hit.y ?? 0,
+                ew: hit.width ?? 200,
+                eh: hit.height ?? 100,
+            };
+        }
+    }
+    if (
+        readOnly &&
+        !spotlightBounds &&
+        spotlightRect &&
+        typeof spotlightRect.x === 'number' &&
+        typeof spotlightRect.y === 'number'
+    ) {
+        spotlightBounds = {
+            ex: spotlightRect.x,
+            ey: spotlightRect.y,
+            ew: typeof spotlightRect.width === 'number' ? spotlightRect.width : spotlightRect.w ?? 120,
+            eh: typeof spotlightRect.height === 'number' ? spotlightRect.height : spotlightRect.h ?? 80,
+        };
+    }
+
     return (
         <div
             className="relative bg-gradient-to-br from-slate-100/90 via-white to-sky-50/40 dark:from-slate-900 dark:via-slate-900 dark:to-indigo-950/40"
@@ -276,20 +303,6 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
                     <p className="mt-1.5 font-serif text-[1.35rem] text-slate-600 dark:text-slate-300">{canvas.subtitle}</p>
                 ) : null}
             </div>
-            {readOnly &&
-            spotlightRect &&
-            typeof spotlightRect.x === 'number' &&
-            typeof spotlightRect.y === 'number' ? (
-                <div
-                    className="pointer-events-none absolute z-10 rounded-lg ring-4 ring-amber-400/95 ring-offset-2 ring-offset-transparent"
-                    style={{
-                        left: spotlightRect.x,
-                        top: spotlightRect.y,
-                        width: typeof spotlightRect.width === 'number' ? spotlightRect.width : spotlightRect.w ?? 120,
-                        height: typeof spotlightRect.height === 'number' ? spotlightRect.height : spotlightRect.h ?? 80,
-                    }}
-                />
-            ) : null}
             {canvas.footer ? (
                 <div className="absolute bottom-0 left-0 right-0 z-[2] border-t border-slate-300/80 bg-gradient-to-r from-slate-100/98 via-white/95 to-slate-50/98 px-8 py-2.5 font-serif text-[13px] font-medium leading-snug text-slate-800 shadow-[0_-6px_20px_rgba(15,23,42,0.06)] dark:border-slate-600 dark:from-slate-900/98 dark:via-slate-950/95 dark:to-slate-900/98 dark:text-slate-100">
                     {canvas.footer}
@@ -297,14 +310,11 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
             ) : null}
             {canvas.elements.map((el) => {
                 if (el.type === 'image' && el.src) {
-                    const spotEl = readOnly && spotlightElementId && el.id === spotlightElementId;
                     const pending = /^pdf_page:\d+$/i.test(el.src);
                     return (
                         <div
                             key={el.id}
-                            className={`absolute overflow-hidden rounded-2xl border border-slate-200/90 bg-slate-100 shadow-md dark:border-slate-600 dark:bg-slate-800 ${
-                                spotEl ? 'z-10 ring-4 ring-amber-400/95 ring-offset-2' : 'z-0'
-                            }`}
+                            className="absolute z-0 overflow-hidden rounded-2xl border border-slate-200/90 bg-slate-100 shadow-md dark:border-slate-600 dark:bg-slate-800"
                             style={{
                                 left: el.x,
                                 top: el.y,
@@ -323,14 +333,11 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
                     );
                 }
                 if (el.type === 'card') {
-                    const spotEl = readOnly && spotlightElementId && el.id === spotlightElementId;
                     const lines = cardDisplayLines(el);
                     return (
                         <div
                             key={el.id}
-                            className={`absolute flex flex-col rounded-2xl border-2 px-3 pb-2.5 pt-3 ${slideCardSurface(el.accent)} ${
-                                spotEl ? 'z-10 ring-4 ring-amber-400/95 ring-offset-2' : 'z-[1]'
-                            }`}
+                            className={`absolute z-[1] flex flex-col rounded-2xl border-2 px-3 pb-2.5 pt-3 ${slideCardSurface(el.accent)}`}
                             style={{
                                 left: el.x,
                                 top: el.y,
@@ -377,13 +384,10 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
                 if (!isTextBlock) {
                     return null;
                 }
-                const spotEl = readOnly && spotlightElementId && el.id === spotlightElementId;
                 return (
                     <div
                         key={el.id}
-                        className={`absolute border border-dashed border-indigo-200 bg-white/80 px-2 py-1 text-zinc-800 dark:border-indigo-700 dark:bg-zinc-900/80 dark:text-zinc-100 ${
-                            spotEl ? 'z-10 ring-4 ring-amber-400/95 ring-offset-2' : ''
-                        }`}
+                        className="absolute z-0 border border-dashed border-indigo-200 bg-white/80 px-2 py-1 text-zinc-800 dark:border-indigo-700 dark:bg-zinc-900/80 dark:text-zinc-100"
                         style={{
                             left: el.x,
                             top: el.y,
@@ -396,6 +400,45 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
                     </div>
                 );
             })}
+            {spotlightBounds ? (
+                <div className="pointer-events-none absolute inset-0 z-20">
+                    <div
+                        className="absolute left-0 right-0 bg-black/55 transition-all duration-300"
+                        style={{ top: 0, height: spotlightBounds.ey }}
+                    />
+                    <div
+                        className="absolute left-0 right-0 bg-black/55 transition-all duration-300"
+                        style={{ top: spotlightBounds.ey + spotlightBounds.eh, bottom: 0 }}
+                    />
+                    <div
+                        className="absolute bg-black/55 transition-all duration-300"
+                        style={{
+                            top: spotlightBounds.ey,
+                            left: 0,
+                            width: spotlightBounds.ex,
+                            height: spotlightBounds.eh,
+                        }}
+                    />
+                    <div
+                        className="absolute bg-black/55 transition-all duration-300"
+                        style={{
+                            top: spotlightBounds.ey,
+                            left: spotlightBounds.ex + spotlightBounds.ew,
+                            right: 0,
+                            height: spotlightBounds.eh,
+                        }}
+                    />
+                    <div
+                        className="absolute rounded-xl ring-2 ring-amber-400/90 ring-offset-0 transition-all duration-300"
+                        style={{
+                            top: spotlightBounds.ey - 4,
+                            left: spotlightBounds.ex - 4,
+                            width: spotlightBounds.ew + 8,
+                            height: spotlightBounds.eh + 8,
+                        }}
+                    />
+                </div>
+            ) : null}
         </div>
     );
 }

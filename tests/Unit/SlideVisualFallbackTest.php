@@ -3,7 +3,8 @@
 namespace Tests\Unit;
 
 use App\Support\LessonGeneration\SlideVisualFallback;
-use PHPUnit\Framework\TestCase;
+use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
 
 class SlideVisualFallbackTest extends TestCase
 {
@@ -71,5 +72,58 @@ class SlideVisualFallbackTest extends TestCase
 
         $out = SlideVisualFallback::applyToScene($scene, 'water cycle');
         $this->assertCount(1, $out['content']['canvas']['elements']);
+    }
+
+    public function test_wikimedia_last_resort_when_no_keyword_match(): void
+    {
+        Http::fake([
+            'en.wikipedia.org/w/api.php*' => Http::response([
+                'query' => [
+                    'pages' => [
+                        '42' => [
+                            'title' => 'File:Example diagram.png',
+                            'imageinfo' => [[
+                                'thumburl' => 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/00/Example_test.png/520px-Example_test.png',
+                                'url' => 'https://upload.wikimedia.org/wikipedia/commons/0/00/Example_test.png',
+                                'mime' => 'image/png',
+                            ]],
+                        ],
+                    ],
+                ],
+            ], 200),
+        ]);
+
+        $scene = [
+            'type' => 'slide',
+            'title' => 'Market structures',
+            'content' => [
+                'type' => 'slide',
+                'canvas' => [
+                    'title' => 'Market structures',
+                    'width' => 1000,
+                    'height' => 562.5,
+                    'elements' => [
+                        [
+                            'type' => 'text',
+                            'id' => 't1',
+                            'x' => 48,
+                            'y' => 120,
+                            'width' => 900,
+                            'height' => 400,
+                            'fontSize' => 22,
+                            'text' => 'Oligopoly and monopolistic competition differ in barriers to entry.',
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $out = SlideVisualFallback::applyToScene($scene, 'microeconomics market structure comparison');
+
+        $els = $out['content']['canvas']['elements'];
+        $this->assertGreaterThanOrEqual(2, count($els));
+        $this->assertSame('image', $els[0]['type']);
+        $this->assertStringContainsString('upload.wikimedia.org', (string) $els[0]['src']);
+        Http::assertSent(static fn ($request) => str_contains($request->url(), 'en.wikipedia.org/w/api.php'));
     }
 }

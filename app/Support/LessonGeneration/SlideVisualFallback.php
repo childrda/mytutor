@@ -2,6 +2,7 @@
 
 namespace App\Support\LessonGeneration;
 
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
 /**
@@ -90,7 +91,7 @@ final class SlideVisualFallback
         $canvasTitle = trim((string) ($canvas['title'] ?? ''));
         $textBlob = self::concatTextFromElements($els);
         $haystack = mb_strtolower($requirement.' '.$title.' '.$canvasTitle.' '.$textBlob);
-        $match = self::matchDiagram($haystack);
+        $match = self::matchDiagram($haystack, $requirement);
         if ($match === null) {
             return $scene;
         }
@@ -171,9 +172,14 @@ final class SlideVisualFallback
     }
 
     /**
+     * @var array<string, array{url: string, alt: string}|null>
+     */
+    private static array $wikimediaCache = [];
+
+    /**
      * @return array{url: string, alt: string}|null
      */
-    private static function matchDiagram(string $haystack): ?array
+    private static function matchDiagram(string $haystack, string $requirement): ?array
     {
         foreach (self::DIAGRAMS as $row) {
             foreach ($row['needles'] as $needle) {
@@ -181,6 +187,101 @@ final class SlideVisualFallback
                     return ['url' => $row['url'], 'alt' => $row['alt']];
                 }
             }
+        }
+
+        if (! self::wikimediaFallbackEnabled()) {
+            return null;
+        }
+
+        $topic = trim($requirement);
+        if ($topic === '') {
+            $clean = preg_replace('/\s+/u', ' ', preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $haystack));
+            $clean = trim(mb_strtolower($clean));
+            $words = preg_split('/\s+/u', $clean, 10);
+            $words = array_values(array_filter($words, static fn (string $w): bool => mb_strlen($w) > 1));
+            $topic = implode(' ', array_slice($words, 0, 4));
+        }
+        $topic = trim(mb_substr($topic, 0, 80));
+        if (mb_strlen($topic) < 3) {
+            return null;
+        }
+
+        return self::fetchWikimediaImage($topic);
+    }
+
+    private static function wikimediaFallbackEnabled(): bool
+    {
+        if (function_exists('app') && app()->bound('config')) {
+            return (bool) config('tutor.lesson_generation.slide_visual_fallback_wikimedia', true);
+        }
+
+        return true;
+    }
+
+    /**
+     * @return array{url: string, alt: string}|null
+     */
+    private static function fetchWikimediaImage(string $topic): ?array
+    {
+        $key = mb_strtolower($topic);
+        if (array_key_exists($key, self::$wikimediaCache)) {
+            return self::$wikimediaCache[$key];
+        }
+        $resolved = self::fetchWikimediaImageUncached($topic);
+        self::$wikimediaCache[$key] = $resolved;
+
+        return $resolved;
+    }
+
+    /**
+     * @return array{url: string, alt: string}|null
+     */
+    private static function fetchWikimediaImageUncached(string $topic): ?array
+    {
+        $query = rawurlencode($topic);
+        $url = 'https://en.wikipedia.org/w/api.php?action=query&generator=search'
+            ."&gsrsearch={$query}&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url|mime&iiurlwidth=520&format=json&origin=*";
+
+        try {
+            $response = Http::timeout(3)
+                ->connectTimeout(2)
+                ->withHeaders([
+                    'User-Agent' => trim((string) config('app.name', 'MyTutor')).'/1.0 (slide visual fallback; +https://www.mediawiki.org/wiki/API:Main_page)',
+                ])
+                ->get($url);
+            if (! $response->successful()) {
+                return null;
+            }
+            $data = $response->json();
+            $pages = $data['query']['pages'] ?? null;
+            if (! is_array($pages)) {
+                return null;
+            }
+            foreach ($pages as $page) {
+                if (! is_array($page)) {
+                    continue;
+                }
+                $info = $page['imageinfo'][0] ?? null;
+                if (! is_array($info)) {
+                    continue;
+                }
+                $mime = isset($info['mime']) && is_string($info['mime']) ? $info['mime'] : '';
+                if ($mime !== '' && ! str_starts_with($mime, 'image/')) {
+                    continue;
+                }
+                $thumbUrl = isset($info['thumburl']) && is_string($info['thumburl']) ? $info['thumburl'] : '';
+                $fullUrl = isset($info['url']) && is_string($info['url']) ? $info['url'] : '';
+                $pick = str_starts_with($thumbUrl, 'https://') ? $thumbUrl : (str_starts_with($fullUrl, 'https://') ? $fullUrl : '');
+                if ($pick === '') {
+                    continue;
+                }
+                $title = isset($page['title']) && is_string($page['title']) ? $page['title'] : 'Educational image';
+                $alt = preg_replace('/^File:/i', '', $title);
+
+                return ['url' => $pick, 'alt' => $alt];
+            }
+        } catch (\Throwable) {
+            return null;
         }
 
         return null;

@@ -89,11 +89,28 @@ return [
         'roles_max_tokens' => max(256, (int) env('TUTOR_LESSON_GEN_ROLES_MAX_TOKENS', 2048)),
         'outline_max_tokens' => max(512, (int) env('TUTOR_LESSON_GEN_OUTLINE_MAX_TOKENS', 4096)),
         'content_max_tokens' => max(1024, (int) env('TUTOR_LESSON_GEN_CONTENT_MAX_TOKENS', 8192)),
+        /*
+        | When true (default), each outline scene gets its own LLM completion with
+        | content_max_tokens_per_scene — similar to OpenMAIC’s parallel per-scene generation.
+        | When false, one batched call returns all scenes (uses content_max_tokens only).
+        */
+        'content_per_scene' => filter_var(env('TUTOR_LESSON_GEN_CONTENT_PER_SCENE', 'true'), FILTER_VALIDATE_BOOL),
+        'content_max_tokens_per_scene' => max(1024, (int) env('TUTOR_LESSON_GEN_CONTENT_PER_SCENE_MAX_TOKENS', 6144)),
+        'content_scene_max_concurrent' => max(1, min(12, (int) env('TUTOR_LESSON_GEN_CONTENT_CONCURRENT', 4))),
+        /*
+        | After slide content exists, one LLM call per scene generates teaching actions
+        | (voiceover-style speech + spotlights)—mirrors OpenMAIC’s separate actions step.
+        */
+        'content_actions_llm' => filter_var(env('TUTOR_LESSON_GEN_ACTIONS_LLM', 'true'), FILTER_VALIDATE_BOOL),
+        'actions_model' => env('TUTOR_LESSON_GEN_ACTIONS_MODEL'),
+        'actions_max_tokens_per_scene' => max(512, (int) env('TUTOR_LESSON_GEN_ACTIONS_MAX_TOKENS', 3072)),
+        'actions_scene_max_concurrent' => max(1, min(12, (int) env('TUTOR_LESSON_GEN_ACTIONS_CONCURRENT', 4))),
         'placeholder_narration_actions' => filter_var(env('TUTOR_LESSON_GEN_PLACEHOLDER_ACTIONS', 'true'), FILTER_VALIDATE_BOOL),
         'stream_outline' => filter_var(env('TUTOR_LESSON_GEN_STREAM_OUTLINE', 'true'), FILTER_VALIDATE_BOOL),
         'content_use_pdf_page_images' => filter_var(env('TUTOR_LESSON_GEN_CONTENT_VISION', 'true'), FILTER_VALIDATE_BOOL),
         'max_pdf_page_images' => max(0, min(4, (int) env('TUTOR_LESSON_GEN_MAX_PDF_IMAGES', 4))),
         'max_pdf_image_data_url_chars' => max(10_000, (int) env('TUTOR_LESSON_GEN_MAX_PDF_IMAGE_CHARS', 700_000)),
+        'slide_visual_fallback_wikimedia' => filter_var(env('TUTOR_SLIDE_FALLBACK_WIKIMEDIA', 'true'), FILTER_VALIDATE_BOOL),
     ],
 
     /*

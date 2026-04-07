@@ -33,5 +33,7 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <!-- Avoid streaming outline in tests (extra HTTP + fragile fakes). -->
+        <env name="TUTOR_LESSON_GEN_STREAM_OUTLINE" value="false" force="true"/>
     </php>
 </phpunit>

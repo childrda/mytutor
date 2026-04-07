@@ -12,6 +12,9 @@ use App\Support\LessonGeneration\PdfPageImageHydration;
 use App\Support\LessonGeneration\PipelineStepException;
 use App\Support\LessonGeneration\SlideVisualFallback;
 use App\Support\LessonGeneration\StreamingLessonOutlineParser;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use JsonException;
 use Throwable;
@@ -133,53 +136,35 @@ final class OrchestratedLessonGenerationService
 
         $outlineJson = json_encode($outline, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
         $rolesJson = json_encode($rolesPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        $personasSummary = $this->summarizePersonas($rolesPayload);
 
-        $visionBlock = '';
-        if ($pdfPageImages !== []) {
-            $n = count($pdfPageImages);
-            $visionBlock = 'VISION INPUT: The user message includes '.$n.' rasterized page image(s) from their PDF in order (page 1 first). Read labels, diagrams, and photos. '
-                .'When a slide should show material from those pages, include {type:"image", id (string), x, y, width, height, src:"pdf_page:1", alt (short description)} '
-                .'with src pdf_page:1 for the first image, pdf_page:2 for the second, up to pdf_page:'.$n.' only. After generation the server replaces these with real image data. '
-                .'Product-style richness (like polished tutoring apps): combine a strong visual with a structured text block—overview slides are often diagram + "Key ideas" bullets; stage slides alternate image + explanation rather than walls of plain text. '
-                .'For overview slides, prefer TWO COLUMNS: LEFT a large image (e.g. x=40, y=175, width=460, height=340) using pdf_page:1 when it shows the main figure; RIGHT a card titled exactly "Key ideas" with bullets from BOTH the excerpt and what you see in the images. '
-                .'Leave ~40px horizontal gap between columns. When the outline is stage-based, mirror that pattern: one pdf_page image that fits the stage + a "Key ideas" or compact card for takeaways. '
-                .'Optional: a small second card titled "Keywords" or a one-line canvas.footer (e.g. reflection). Quiz outline items stay type "quiz" with multiple-choice UI, not slide cards. ';
+        $layoutRules = $this->buildLayoutRules($pdfPageImages);
+        $visionBlock = $this->buildVisionBlock($pdfPageImages);
+
+        if (config('tutor.lesson_generation.content_per_scene', true)) {
+            $aligned = $this->generateSceneContentsPerScene(
+                $job,
+                $baseUrl,
+                $apiKey,
+                $userBase,
+                $outline,
+                $personasSummary,
+                $language,
+                $pdfPageImages,
+                $layoutRules,
+                $visionBlock,
+                0.4,
+            );
+        } else {
+            $systemContent = $this->buildBatchedContentSystemPrompt($language, $layoutRules, $visionBlock);
+            $userContent = $userBase."\n\nOUTLINE (follow ids, types, order exactly):\n".$outlineJson
+                ."\n\nCLASSROOM_ROLES:\n".$rolesJson;
+
+            $decodedContent = $this->chatJsonContentScenes($baseUrl, $apiKey, $systemContent, $userContent, 0.4, $pdfPageImages);
+
+            $rawScenes = is_array($decodedContent['scenes'] ?? null) ? $decodedContent['scenes'] : [];
+            $aligned = $this->alignScenesToOutline($rawScenes, $outline);
         }
-
-        $layoutRules = $pdfPageImages !== []
-            ? 'LAYOUT WHEN PDF IMAGES ARE PRESENT (VISION INPUT above): For each type "slide" scene, default to a RICH layout—not text-only. '
-                .'(1) Include at least one type "image" with src "pdf_page:N" on most teaching slides when any page visually supports that slide (choose N from 1..'.count($pdfPageImages).'; reuse pages across slides when it makes sense). '
-                .'(2) Include a type "card" whose title is exactly "Key ideas" with 3–5 short, concrete bullets grounded in the excerpt and the page images. '
-                .'(3) Prefer two columns when one main figure exists: LEFT large image (~x=40,y=175,w=460,h=340), RIGHT "Key ideas" card (~x=520,w=420). Swap left/right if the outline reads better text-first. '
-                .'(4) For four parallel items (e.g. cycle stages), you MAY use a 2×2 grid of four cards—but still add a pdf_page image when a single diagram carries the lesson. '
-                .'(5) Give every canvas element a stable id (e.g. img_main, card_keyideas, card_keywords) so narration can highlight them. '
-                .'Do NOT default to three equal-width concept cards when a pdf_page image can illustrate the slide; reserve three-column cards for abstract comparisons or when images are a poor fit. '
-            : 'NO PDF IMAGES: Still build RICH slides—never a single full-slide paragraph in one text box. For EVERY type "slide" (not quiz): '
-                .'(1) Include at least one type "image" with src a real https URL to an educational diagram (strongly prefer upload.wikimedia.org/wikipedia/commons thumbnails tied to the slide topic). Do not use example.com, placeholder hosts, or made-up URLs. '
-                .'(2) Include a type "card" titled exactly "Key ideas" with 3–5 bullets, OR—when comparing exactly three parallel ideas—THREE type "card" elements side by side (width ~300, x about 32, 340, 648, y ~188) with accents sky, emerald, violet. '
-                .'(3) Default layout: LEFT large diagram (~x=40,y=165,w=450,h=340), RIGHT "Key ideas" card (~x=510,w=460). Put the slide heading only in canvas.title/canvas.subtitle—not repeated as a giant text block. '
-                .'(4) FORBIDDEN: one text element that carries all teaching prose across the whole canvas; split ideas into cards and/or caption the diagram with short alt text. ';
-
-        $systemContent = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with key: '
-            .'scenes (array). The array MUST have the SAME LENGTH and ORDER as the provided outline. Match each scene id and type from the outline. '
-            .$visionBlock
-            .'For type "slide", content MUST be: {type:"slide", canvas:{title (string), subtitle (string, optional tagline under title), footer (string, optional "Quick check" or reflection question), width:1000, height:562.5, elements:[...]}}. '
-            .'Put the main slide title in canvas.title and a short tagline in canvas.subtitle (e.g. "What you notice every day"). Put a closing prompt in canvas.footer when it fits (e.g. "Quick check: Which example shows evaporation?"). '
-            .'Do NOT duplicate the main title in a text element; use text elements only for optional extra callouts (small font, lower on the slide) if needed. '
-            .$layoutRules
-            .'card fields: {type:"card", id, x, y, width, height, title, bullets (array of strings), caption (string), accent ("sky"|"emerald"|"violet"|"indigo"|"amber"|"rose"|"slate"), icon (one emoji)}. '
-            .'image element: {type:"image", id, x, y, width, height, src ("pdf_page:N" or https URL), alt}. '
-            .'Optional legacy: body (string) if bullets omitted. text element shape: {type:"text", id, x, y, width, height, fontSize, text}. '
-            .'For type "quiz", content: {type:"quiz", questions:[{id, type:"single"|"multiple", prompt, points, options:[{id,label}], correctIds:[], gradingHint}]}. '
-            .'Use language: '.$language.'.';
-
-        $userContent = $userBase."\n\nOUTLINE (follow ids, types, order exactly):\n".$outlineJson
-            ."\n\nCLASSROOM_ROLES:\n".$rolesJson;
-
-        $decodedContent = $this->chatJsonContentScenes($baseUrl, $apiKey, $systemContent, $userContent, 0.4, $pdfPageImages);
-
-        $rawScenes = is_array($decodedContent['scenes'] ?? null) ? $decodedContent['scenes'] : [];
-        $aligned = $this->alignScenesToOutline($rawScenes, $outline);
 
         $stageDesc = is_string($stage['description'] ?? null) ? trim($stage['description']) : '';
         $scenes = [];
@@ -214,16 +199,51 @@ final class OrchestratedLessonGenerationService
         ]);
         $job->refresh();
 
-        $job->update([
-            'progress' => 72,
-            'phase_detail' => ['message' => 'Adding teaching-action placeholders', 'pipelineStep' => 'content'],
-        ]);
+        if (config('tutor.lesson_generation.content_actions_llm', true)) {
+            $job->update([
+                'phase' => LessonGenerationPhases::TEACHING_ACTIONS,
+                'progress' => 70,
+                'phase_detail' => ['message' => 'Generating voiceover and teaching actions per scene', 'pipelineStep' => 'actions'],
+            ]);
+            $scenes = $this->generateSceneActionsPerSceneLlm(
+                $job,
+                $baseUrl,
+                $apiKey,
+                $scenes,
+                $outline,
+                $rolesPayload,
+                $personasSummary,
+                $language,
+                $userBase,
+                $requirement,
+            );
+            $job->refresh();
+            $job->update([
+                'result' => array_merge(is_array($job->result) ? $job->result : [], [
+                    'partial' => true,
+                    'pipelineStep' => 'actions',
+                    'stage' => $stage,
+                    'classroomRoles' => $rolesPayload,
+                    'outline' => $outline,
+                    'scenes' => $scenes,
+                ]),
+            ]);
+        }
 
         $job->update([
             'phase' => LessonGenerationPhases::TEACHING_ACTIONS,
             'progress' => 85,
-            'phase_detail' => ['message' => 'Finalizing timeline placeholders', 'pipelineStep' => 'actions'],
+            'phase_detail' => ['message' => 'Finalizing timeline and placeholders', 'pipelineStep' => 'actions'],
+            'result' => array_merge(is_array($job->result) ? $job->result : [], [
+                'partial' => true,
+                'pipelineStep' => 'actions',
+                'stage' => $stage,
+                'classroomRoles' => $rolesPayload,
+                'outline' => $outline,
+                'scenes' => $scenes,
+            ]),
         ]);
+        $job->refresh();
 
         $scenes = $this->applyPlaceholderActions($scenes, $rolesPayload, $pdfPageImages !== []);
 
@@ -407,6 +427,761 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
+     * @param  list<string>  $pdfPageImages
+     */
+    private function buildVisionBlock(array $pdfPageImages): string
+    {
+        if ($pdfPageImages === []) {
+            return '';
+        }
+        $n = count($pdfPageImages);
+
+        return 'VISION INPUT: The user message includes '.$n.' rasterized page image(s) from their PDF in order (page 1 first). Read labels, diagrams, and photos. '
+            .'When a slide should show material from those pages, include {type:"image", id (string), x, y, width, height, src:"pdf_page:1", alt (short description)} '
+            .'with src pdf_page:1 for the first image, pdf_page:2 for the second, up to pdf_page:'.$n.' only. After generation the server replaces these with real image data. '
+            .'Product-style richness (like polished tutoring apps): combine a strong visual with a structured text block—overview slides are often diagram + "Key ideas" bullets; stage slides alternate image + explanation rather than walls of plain text. '
+            .'For overview slides, prefer TWO COLUMNS: LEFT a large image (e.g. x=40, y=175, width=460, height=340) using pdf_page:1 when it shows the main figure; RIGHT a card titled exactly "Key ideas" with bullets from BOTH the excerpt and what you see in the images. '
+            .'Leave ~40px horizontal gap between columns. When the outline is stage-based, mirror that pattern: one pdf_page image that fits the stage + a "Key ideas" or compact card for takeaways. '
+            .'Optional: a small second card titled "Keywords" or a one-line canvas.footer (e.g. reflection). Quiz outline items stay type "quiz" with multiple-choice UI, not slide cards. ';
+    }
+
+    /**
+     * @param  list<string>  $pdfPageImages
+     */
+    private function buildLayoutRules(array $pdfPageImages): string
+    {
+        if ($pdfPageImages !== []) {
+            return 'LAYOUT WHEN PDF IMAGES ARE PRESENT (VISION INPUT above): For each type "slide" scene, default to a RICH layout—not text-only. '
+                .'(1) Include at least one type "image" with src "pdf_page:N" on most teaching slides when any page visually supports that slide (choose N from 1..'.count($pdfPageImages).'; reuse pages across slides when it makes sense). '
+                .'(2) Include a type "card" whose title is exactly "Key ideas" with 3–5 short, concrete bullets grounded in the excerpt and the page images. '
+                .'(3) Prefer two columns when one main figure exists: LEFT large image (~x=40,y=175,w=460,h=340), RIGHT "Key ideas" card (~x=520,w=420). Swap left/right if the outline reads better text-first. '
+                .'(4) For four parallel items (e.g. cycle stages), you MAY use a 2×2 grid of four cards—but still add a pdf_page image when a single diagram carries the lesson. '
+                .'(5) Give every canvas element a stable id (e.g. img_main, card_keyideas, card_keywords) so narration can highlight them. '
+                .'Do NOT default to three equal-width concept cards when a pdf_page image can illustrate the slide; reserve three-column cards for abstract comparisons or when images are a poor fit. ';
+        }
+
+        return 'NO PDF IMAGES: Still build RICH slides—never a single full-slide paragraph in one text box. For EVERY type "slide" (not quiz): '
+            .'(1) Include at least one type "image" with src a real https URL to an educational diagram (strongly prefer upload.wikimedia.org/wikipedia/commons thumbnails tied to the slide topic). Do not use example.com, placeholder hosts, or made-up URLs. '
+            .'(2) Include a type "card" titled exactly "Key ideas" with 3–5 bullets, OR—when comparing exactly three parallel ideas—THREE type "card" elements side by side (width ~300, x about 32, 340, 648, y ~188) with accents sky, emerald, violet. '
+            .'(3) Default layout: LEFT large diagram (~x=40,y=165,w=450,h=340), RIGHT "Key ideas" card (~x=510,w=460). Put the slide heading only in canvas.title/canvas.subtitle—not repeated as a giant text block. '
+            .'(4) FORBIDDEN: one text element that carries all teaching prose across the whole canvas; split ideas into cards and/or caption the diagram with short alt text. ';
+    }
+
+    private function buildBatchedContentSystemPrompt(string $language, string $layoutRules, string $visionBlock): string
+    {
+        return 'You are an expert curriculum designer building visually rich, '
+            .'polished educational slides. Output a single JSON object only, no markdown, with key: '
+            .'scenes (array matching the outline exactly — same length, same ids, same order).'
+            ."\n\n## VISUAL DESIGN RULES (follow these before anything else)\n"
+            .$layoutRules
+            ."\n\n## ELEMENT SCHEMAS\n"
+            .'For type "slide": {type:"slide", canvas:{title, subtitle (short tagline), footer (optional reflection prompt), width:1000, height:562.5, elements:[]}}. '
+            .'NEVER put the main title in an element — it goes in canvas.title only. '
+            .'NEVER produce a slide with only text elements — every slide must have at least one image or card. '
+            .'card: {type:"card", id, x, y, width, height, title, bullets:["3-5 concrete bullet strings"], caption, accent:"sky"|"emerald"|"violet"|"indigo"|"amber"|"rose"|"slate", icon:"emoji"}. '
+            .'image: {type:"image", id, x, y, width, height, src, alt}. '
+            .$visionBlock
+            .'Optional legacy: body (string) on cards if bullets omitted. text element (only for small callouts): {type:"text", id, x, y, width, height, fontSize, text}. '
+            .'For type "quiz": {type:"quiz", questions:[{id, type:"single", prompt, points:1, options:[{id,label}], correctIds:[], gradingHint}]}. '
+            .'Use language: '.$language.'.';
+    }
+
+    private function buildSingleSceneSystemPrompt(string $language, string $layoutRules, string $visionBlock): string
+    {
+        return 'You are an expert curriculum designer. Generate ONE lesson scene only (OpenMAIC-style: full attention to this slide or quiz). '
+            .'Output a single JSON object only, no markdown, with key: scene (one object).'
+            ."\n\n## VISUAL DESIGN RULES (follow these before anything else)\n"
+            .$layoutRules
+            ."\n\n## OUTPUT SHAPE\n"
+            .'scene: { type ("slide"|"quiz"), title (string), optional notes (string), content: slide or quiz body }. '
+            .'For slide scenes, content = {type:"slide", canvas:{title, subtitle, footer (optional), width:1000, height:562.5, elements:[...]}}. '
+            .'canvas.title is the on-slide heading; NEVER put the main title only in a text element. '
+            .'NEVER produce a slide with only text elements — include at least one image or card with several bullets. '
+            .'Expand the outline objective and notes into concrete bullets, labels, and diagram choices—do not output a single short sentence for the whole slide. '
+            .'card: {type:"card", id, x, y, width, height, title, bullets (3–5 strings), caption, accent, icon}. '
+            .'image: {type:"image", id, x, y, width, height, src, alt}. '
+            .$visionBlock
+            .'text elements: optional small callouts only. '
+            .'For quiz scenes, content = {type:"quiz", questions:[{id, type:"single", prompt, points:1, options:[{id,label}], correctIds:[], gradingHint}]}. '
+            .'Use language: '.$language.'.';
+    }
+
+    /**
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
+     * @param  list<string>  $pdfPageImages
+     * @return list<array<string, mixed>>
+     */
+    private function generateSceneContentsPerScene(
+        LessonGenerationJob $job,
+        string $baseUrl,
+        string $apiKey,
+        string $userBase,
+        array $outline,
+        string $personasSummary,
+        string $language,
+        array $pdfPageImages,
+        string $layoutRules,
+        string $visionBlock,
+        float $temperature,
+    ): array {
+        $total = count($outline);
+        if ($total === 0) {
+            return [];
+        }
+
+        $system = $this->buildSingleSceneSystemPrompt($language, $layoutRules, $visionBlock);
+        $model = $this->modelFor('content');
+        $maxPer = max(1024, (int) config('tutor.lesson_generation.content_max_tokens_per_scene', 6144));
+        $concurrent = max(1, min(12, (int) config('tutor.lesson_generation.content_scene_max_concurrent', 4)));
+        $useVision = $pdfPageImages !== []
+            && (bool) config('tutor.lesson_generation.content_use_pdf_page_images', true);
+
+        $out = [];
+
+        for ($offset = 0; $offset < $total; $offset += $concurrent) {
+            $requests = [];
+            for ($k = 0; $k < $concurrent && ($offset + $k) < $total; $k++) {
+                $idx = $offset + $k;
+                $spec = $outline[$idx];
+                $userText = $this->buildSingleSceneUserText($userBase, $personasSummary, $outline, $idx, $total, $spec);
+                $key = 's'.$idx;
+
+                if ($useVision) {
+                    $parts = [['type' => 'text', 'text' => $userText]];
+                    foreach (array_values($pdfPageImages) as $url) {
+                        if (! is_string($url) || ! str_starts_with($url, 'data:image/')) {
+                            continue;
+                        }
+                        $parts[] = [
+                            'type' => 'image_url',
+                            'image_url' => [
+                                'url' => $url,
+                                'detail' => 'high',
+                            ],
+                        ];
+                    }
+                    $messages = [
+                        ['role' => 'system', 'content' => $system],
+                        ['role' => 'user', 'content' => $parts],
+                    ];
+                } else {
+                    $messages = [
+                        ['role' => 'system', 'content' => $system],
+                        ['role' => 'user', 'content' => $userText],
+                    ];
+                }
+
+                $requests[] = [
+                    'key' => $key,
+                    'index' => $idx,
+                    'spec' => $spec,
+                    'messages' => $messages,
+                    'temperature' => $temperature,
+                    'max' => $maxPer,
+                ];
+            }
+
+            $rawByKey = $concurrent <= 1
+                ? $this->chatCompletionSequential($baseUrl, $apiKey, $model, $requests)
+                : $this->chatCompletionPool($baseUrl, $apiKey, $model, $requests);
+
+            foreach ($requests as $req) {
+                $raw = $rawByKey[$req['key']] ?? '';
+                $parsed = $this->parseSingleSceneJson($raw, $req['spec']);
+                if ($parsed === null) {
+                    $row = $this->skeletonSceneFromSpec($req['spec']);
+                } else {
+                    $row = $parsed;
+                }
+                $out[$req['index']] = $this->finalizeSceneRowFromLlm($row, $req['spec']);
+            }
+
+            $done = min($total, $offset + $concurrent);
+            $job->refresh();
+            $job->update([
+                'progress' => 48 + (int) floor(($done / max(1, $total)) * 12),
+                'phase_detail' => [
+                    'message' => 'Building slide and quiz content ('.$done.' / '.$total.')',
+                    'pipelineStep' => 'content',
+                ],
+            ]);
+        }
+
+        ksort($out);
+
+        return array_values($out);
+    }
+
+    /**
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     */
+    private function buildSingleSceneUserText(
+        string $userBase,
+        string $personasSummary,
+        array $outline,
+        int $index,
+        int $total,
+        array $spec,
+    ): string {
+        $specJson = json_encode($spec, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        $lines = [];
+        $lines[] = 'Classroom personas (names/roles):';
+        $lines[] = $personasSummary;
+        $lines[] = '';
+        $lines[] = 'Lesson position: scene '.($index + 1).' of '.$total.'.';
+        if ($index > 0) {
+            $prevTitle = $outline[$index - 1]['title'] ?? '';
+            if ($prevTitle !== '') {
+                $lines[] = 'Previous scene title: '.$prevTitle;
+            }
+        }
+        if ($index < $total - 1) {
+            $nextTitle = $outline[$index + 1]['title'] ?? '';
+            if ($nextTitle !== '') {
+                $lines[] = 'Next scene title: '.$nextTitle;
+            }
+        }
+        $lines[] = '';
+        $lines[] = 'OUTLINE_SCENE_ID: '.$spec['id'];
+        $lines[] = 'Generate rich content for THIS outline item only. Turn objective and notes into detailed slide elements (or a full quiz).';
+        $lines[] = 'Outline item JSON:';
+        $lines[] = $specJson;
+        $lines[] = '';
+        $lines[] = $userBase;
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * @param  list<array{key: string, index: int, spec: array<string, mixed>, messages: list<array<string, mixed>>, temperature: float, max: int}>  $requests
+     * @return array<string, string>
+     */
+    private function chatCompletionPool(string $baseUrl, string $apiKey, string $model, array $requests): array
+    {
+        $url = rtrim($baseUrl, '/').'/chat/completions';
+        $responses = Http::pool(function (Pool $pool) use ($url, $apiKey, $model, $requests) {
+            foreach ($requests as $req) {
+                $pool->as($req['key'])
+                    ->withToken($apiKey, 'Bearer')
+                    ->acceptJson()
+                    ->timeout(300)
+                    ->post($url, [
+                        'model' => $model,
+                        'messages' => $req['messages'],
+                        'temperature' => $req['temperature'],
+                        'max_tokens' => $req['max'],
+                    ]);
+            }
+        });
+
+        $out = [];
+        foreach ($requests as $req) {
+            $key = $req['key'];
+            $r = $responses[$key] ?? null;
+            if ($r instanceof Response && $r->successful()) {
+                $c = data_get($r->json(), 'choices.0.message.content');
+                $out[$key] = is_string($c) ? trim($c) : '';
+            } else {
+                $out[$key] = '';
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Sequential completions (predictable order for tests; avoids Http::pool + fake ordering issues).
+     *
+     * @param  list<array{key: string, messages: list<array<string, mixed>>, temperature: float, max: int}>  $requests
+     * @return array<string, string>
+     */
+    private function chatCompletionSequential(string $baseUrl, string $apiKey, string $model, array $requests): array
+    {
+        $out = [];
+        foreach ($requests as $req) {
+            try {
+                $msgs = $req['messages'];
+                $multimodal = false;
+                foreach ($msgs as $m) {
+                    $c = $m['content'] ?? null;
+                    if (is_array($c) && $c !== [] && isset($c[0]) && is_array($c[0]) && isset($c[0]['type'])) {
+                        $multimodal = true;
+                        break;
+                    }
+                }
+                if ($multimodal) {
+                    $raw = LlmClient::chatWithMessages(
+                        $baseUrl,
+                        $apiKey,
+                        $model,
+                        $msgs,
+                        $req['temperature'],
+                        $req['max'],
+                    );
+                } else {
+                    $raw = LlmClient::chat(
+                        $baseUrl,
+                        $apiKey,
+                        $model,
+                        $msgs,
+                        $req['temperature'],
+                        $req['max'],
+                    );
+                }
+                $out[$req['key']] = trim($raw);
+            } catch (Throwable) {
+                $out[$req['key']] = '';
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     */
+    private function parseSingleSceneJson(string $raw, array $spec): ?array
+    {
+        if ($raw === '') {
+            return null;
+        }
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
+        if (! is_array($decoded)) {
+            return null;
+        }
+        $row = $decoded['scene'] ?? null;
+        if (! is_array($row)) {
+            return null;
+        }
+        $content = $row['content'] ?? null;
+        if (! is_array($content)) {
+            return null;
+        }
+        $expect = $spec['type'] === 'quiz' ? 'quiz' : 'slide';
+        if (($content['type'] ?? '') !== $expect) {
+            return null;
+        }
+        if ($expect === 'slide') {
+            $canvas = $content['canvas'] ?? null;
+            if (! is_array($canvas)) {
+                return null;
+            }
+            $els = $canvas['elements'] ?? null;
+            if (! is_array($els) || $els === []) {
+                return null;
+            }
+        }
+        if ($expect === 'quiz') {
+            $qs = $content['questions'] ?? null;
+            if (! is_array($qs) || $qs === []) {
+                return null;
+            }
+        }
+
+        return $row;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     * @return array<string, mixed>
+     */
+    private function finalizeSceneRowFromLlm(array $row, array $spec): array
+    {
+        $row['id'] = $spec['id'];
+        $row['type'] = $spec['type'];
+        if (! isset($row['title']) || ! is_string($row['title']) || trim($row['title']) === '') {
+            $row['title'] = $spec['title'];
+        }
+        $row['order'] = $spec['order'];
+        if ($spec['notes'] !== '' && (! isset($row['notes']) || $row['notes'] === '')) {
+            $row['notes'] = $spec['notes'];
+        }
+
+        return $row;
+    }
+
+    /**
+     * OpenMAIC-style step 2: one LLM call per slide scene for voiceover + spotlight sequence.
+     *
+     * @param  list<array<string, mixed>>  $scenes
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
+     * @param  array{version: int, personas: list<array<string, mixed>>}  $rolesPayload
+     * @return list<array<string, mixed>>
+     */
+    private function generateSceneActionsPerSceneLlm(
+        LessonGenerationJob $job,
+        string $baseUrl,
+        string $apiKey,
+        array $scenes,
+        array $outline,
+        array $rolesPayload,
+        string $personasSummary,
+        string $language,
+        string $userBase,
+        string $requirement,
+    ): array {
+        $teacher = $this->teacherPersonaForActions($rolesPayload);
+        $teacherId = $teacher['id'];
+        if ($teacherId === '') {
+            return $scenes;
+        }
+
+        $outlineById = [];
+        foreach ($outline as $spec) {
+            if (isset($spec['id']) && is_string($spec['id']) && $spec['id'] !== '') {
+                $outlineById[$spec['id']] = $spec;
+            }
+        }
+
+        $system = $this->buildActionsSystemPrompt($language, $teacher['name']);
+        $model = $this->modelFor('actions');
+        $maxPer = max(512, (int) config('tutor.lesson_generation.actions_max_tokens_per_scene', 3072));
+        $concurrent = max(1, min(12, (int) config('tutor.lesson_generation.actions_scene_max_concurrent', 4)));
+
+        $slideIndexes = [];
+        foreach ($scenes as $i => $scene) {
+            if (is_array($scene) && ($scene['type'] ?? 'slide') === 'slide') {
+                $sid = isset($scene['id']) && is_string($scene['id']) ? $scene['id'] : '';
+                if ($sid !== '' && isset($outlineById[$sid])) {
+                    $slideIndexes[] = $i;
+                }
+            }
+        }
+        $totalSlide = count($slideIndexes);
+        $doneSlide = 0;
+
+        $out = $scenes;
+        for ($p = 0; $p < $totalSlide; $p += $concurrent) {
+            $chunkIdx = array_slice($slideIndexes, $p, $concurrent);
+            $requests = [];
+            foreach ($chunkIdx as $idx) {
+                $scene = $out[$idx];
+                if (! is_array($scene)) {
+                    continue;
+                }
+                $sid = isset($scene['id']) && is_string($scene['id']) ? $scene['id'] : '';
+                $spec = $outlineById[$sid] ?? null;
+                if (! is_array($spec)) {
+                    continue;
+                }
+                $userText = $this->buildActionsUserText(
+                    $userBase,
+                    $requirement,
+                    $personasSummary,
+                    $spec,
+                    $scene,
+                );
+                $requests[] = [
+                    'key' => 'a'.$idx,
+                    'index' => $idx,
+                    'scene' => $scene,
+                    'messages' => [
+                        ['role' => 'system', 'content' => $system],
+                        ['role' => 'user', 'content' => $userText],
+                    ],
+                    'temperature' => 0.45,
+                    'max' => $maxPer,
+                ];
+            }
+
+            if ($requests === []) {
+                break;
+            }
+
+            $rawByKey = $concurrent <= 1
+                ? $this->chatCompletionSequential($baseUrl, $apiKey, $model, $requests)
+                : $this->chatCompletionPool($baseUrl, $apiKey, $model, $requests);
+
+            foreach ($requests as $req) {
+                $raw = $rawByKey[$req['key']] ?? '';
+                $parsed = $this->parseLlmActionsJson($raw, $teacherId, $req['scene']);
+                if ($parsed !== []) {
+                    $errs = \App\Support\Tutor\TeachingActionsValidator::messagesFor(
+                        $parsed,
+                        is_array($req['scene']['content'] ?? null) ? $req['scene']['content'] : null,
+                        ['classroomRoles' => $rolesPayload],
+                        'slide',
+                    );
+                    if ($errs === []) {
+                        $out[$req['index']]['actions'] = $parsed;
+                    }
+                }
+                $doneSlide++;
+            }
+
+            $job->refresh();
+            $job->update([
+                'progress' => 70 + (int) floor(($doneSlide / max(1, $totalSlide)) * 12),
+                'phase_detail' => [
+                    'message' => 'Teaching actions ('.$doneSlide.' / '.$totalSlide.' slides)',
+                    'pipelineStep' => 'actions',
+                ],
+            ]);
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  array{version: int, personas: list<array<string, mixed>>}  $rolesPayload
+     * @return array{id: string, name: string}
+     */
+    private function teacherPersonaForActions(array $rolesPayload): array
+    {
+        foreach ($rolesPayload['personas'] ?? [] as $p) {
+            if (! is_array($p)) {
+                continue;
+            }
+            if (($p['role'] ?? '') === 'teacher' && isset($p['id']) && is_string($p['id']) && $p['id'] !== '') {
+                $name = isset($p['name']) && is_string($p['name']) ? trim($p['name']) : 'Teacher';
+
+                return ['id' => $p['id'], 'name' => $name !== '' ? $name : 'Teacher'];
+            }
+        }
+        $first = $rolesPayload['personas'][0] ?? null;
+        if (is_array($first) && isset($first['id']) && is_string($first['id']) && $first['id'] !== '') {
+            $name = isset($first['name']) && is_string($first['name']) ? trim($first['name']) : 'Teacher';
+
+            return ['id' => $first['id'], 'name' => $name !== '' ? $name : 'Teacher'];
+        }
+
+        return ['id' => '', 'name' => 'Teacher'];
+    }
+
+    private function buildActionsSystemPrompt(string $language, string $teacherDisplayName): string
+    {
+        return 'You are an instructional designer creating a teaching timeline for ONE slide scene. '
+            .'The teacher presenting is named '.$teacherDisplayName.'. '
+            .'Output a single JSON object only, no markdown, with key: actions (array). '
+            .'Each item is an object with field "type": one of speech, spotlight, interact. '
+            ."\n\n"
+            .'speech: { "type":"speech", "label": string (short step title), "text": string }. '
+            .'Write "text" as full voiceover script: multiple sentences, conversational, engaging for students—like a presenter talking through the slide. '
+            .'Use hooks, brief explanations, and transitions; do not output only a single short phrase. '
+            .'Do NOT include JSON inside the speech text. Language: '.$language.'. '
+            ."\n\n"
+            .'spotlight: { "type":"spotlight", "label": string, "target": { "elementId": string }, "durationMs": number (1500–8000) }. '
+            .'elementId MUST be copied exactly from the element list provided—only spotlight ids that exist. '
+            .'Order: usually spotlight before the speech that discusses that element (focus, then explain). '
+            ."\n\n"
+            .'interact (optional, at most one per scene): { "type":"interact", "label": string, "mode": "pause", "prompt": string } for partner reflection or quick check. '
+            ."\n\n"
+            .'Include at least one speech that introduces the slide topic, and enough speech steps to cover main bullets/images. '
+            .'Typical length: 4–12 actions alternating spotlight + speech where helpful.';
+    }
+
+    /**
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     * @param  array<string, mixed>  $scene
+     */
+    private function buildActionsUserText(
+        string $userBase,
+        string $requirement,
+        string $personasSummary,
+        array $spec,
+        array $scene,
+    ): string {
+        $elementLines = [];
+        $canvas = self::canvasFromScene($scene);
+        if ($canvas !== null) {
+            $els = $canvas['elements'] ?? [];
+            if (is_array($els)) {
+                foreach ($els as $el) {
+                    if (! is_array($el)) {
+                        continue;
+                    }
+                    $id = isset($el['id']) && is_string($el['id']) ? $el['id'] : '';
+                    if ($id === '') {
+                        continue;
+                    }
+                    $t = strtolower(trim((string) ($el['type'] ?? '')));
+                    $hint = $id.' ('.$t.')';
+                    if ($t === 'card') {
+                        $title = isset($el['title']) && is_string($el['title']) ? trim($el['title']) : '';
+                        $hint .= $title !== '' ? ' title: '.$title : '';
+                    }
+                    if ($t === 'image') {
+                        $hint .= ' [diagram/image]';
+                    }
+                    $elementLines[] = $hint;
+                }
+            }
+        }
+
+        $sceneForPrompt = $this->sanitizeSceneForActionsPrompt($scene);
+        $sceneJson = json_encode($sceneForPrompt, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        $specJson = json_encode($spec, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+
+        $lines = [];
+        $lines[] = 'Course context:';
+        $lines[] = $userBase;
+        $lines[] = '';
+        $lines[] = 'Requirement summary: '.mb_substr(trim($requirement) !== '' ? trim($requirement) : '(topic only)', 0, 500);
+        $lines[] = '';
+        $lines[] = 'Personas:';
+        $lines[] = $personasSummary;
+        $lines[] = '';
+        $lines[] = 'Outline item for this scene:';
+        $lines[] = $specJson;
+        $lines[] = '';
+        $lines[] = 'Valid canvas element ids for spotlight (use only these):';
+        $lines[] = $elementLines === [] ? '(none — use speech only)' : implode("\n", $elementLines);
+        $lines[] = '';
+        $lines[] = 'Scene JSON (slide content; image src may be shortened):';
+        $lines[] = $sceneJson;
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * @param  array<string, mixed>  $scene
+     * @return array<string, mixed>
+     */
+    private function sanitizeSceneForActionsPrompt(array $scene): array
+    {
+        $copy = json_decode(json_encode($scene, JSON_THROW_ON_ERROR), true);
+        if (! is_array($copy)) {
+            return $scene;
+        }
+        $content = $copy['content'] ?? null;
+        if (is_array($content) && ($content['type'] ?? '') === 'slide') {
+            $canvas = $content['canvas'] ?? null;
+            if (is_array($canvas) && isset($canvas['elements']) && is_array($canvas['elements'])) {
+                foreach ($canvas['elements'] as $i => $el) {
+                    if (! is_array($el)) {
+                        continue;
+                    }
+                    $src = isset($el['src']) && is_string($el['src']) ? $el['src'] : '';
+                    if (str_starts_with($src, 'data:image') && strlen($src) > 120) {
+                        $canvas['elements'][$i]['src'] = '[base64 image omitted; use element id for spotlight]';
+                    }
+                }
+                $content['canvas'] = $canvas;
+                $copy['content'] = $content;
+            }
+        }
+
+        return $copy;
+    }
+
+    /**
+     * @param  array<string, mixed>  $scene
+     * @return list<array<string, mixed>>
+     */
+    private function parseLlmActionsJson(string $raw, string $teacherId, array $scene): array
+    {
+        if ($raw === '') {
+            return [];
+        }
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return [];
+        }
+        if (! is_array($decoded)) {
+            return [];
+        }
+        $actions = $decoded['actions'] ?? null;
+        if (! is_array($actions)) {
+            return [];
+        }
+
+        $idSet = [];
+        $canvas = self::canvasFromScene($scene);
+        if ($canvas !== null) {
+            foreach ($canvas['elements'] ?? [] as $el) {
+                if (is_array($el) && isset($el['id']) && is_string($el['id']) && $el['id'] !== '') {
+                    $idSet[$el['id']] = true;
+                }
+            }
+        }
+
+        $out = [];
+        $interactCount = 0;
+        foreach ($actions as $a) {
+            if (! is_array($a)) {
+                continue;
+            }
+            $type = strtolower(trim((string) ($a['type'] ?? '')));
+            if ($type === 'speech') {
+                $text = isset($a['text']) && is_string($a['text']) ? trim($a['text']) : '';
+                if ($text === '') {
+                    continue;
+                }
+                if (mb_strlen($text) > 6000) {
+                    $text = mb_substr($text, 0, 5999).'…';
+                }
+                $label = isset($a['label']) && is_string($a['label']) ? trim($a['label']) : 'Narration';
+                if ($label === '') {
+                    $label = 'Narration';
+                }
+                $out[] = [
+                    'id' => (string) Str::ulid(),
+                    'type' => 'speech',
+                    'label' => mb_substr($label, 0, 120),
+                    'text' => $text,
+                    'personaId' => $teacherId,
+                    'narrationUrl' => '',
+                    'payload' => [],
+                ];
+            } elseif ($type === 'spotlight') {
+                $target = $a['target'] ?? null;
+                if (! is_array($target)) {
+                    continue;
+                }
+                $eid = isset($target['elementId']) && is_string($target['elementId']) ? trim($target['elementId']) : '';
+                if ($eid === '' || $idSet === [] || ! isset($idSet[$eid])) {
+                    continue;
+                }
+                $label = isset($a['label']) && is_string($a['label']) ? trim($a['label']) : 'Highlight';
+                $ms = isset($a['durationMs']) && is_numeric($a['durationMs']) ? (int) $a['durationMs'] : 3800;
+                $ms = min(12_000, max(1500, $ms));
+                $out[] = [
+                    'id' => (string) Str::ulid(),
+                    'type' => 'spotlight',
+                    'label' => mb_substr($label !== '' ? $label : 'Highlight', 0, 120),
+                    'target' => [
+                        'kind' => 'element',
+                        'elementId' => $eid,
+                    ],
+                    'durationMs' => $ms,
+                    'payload' => [],
+                ];
+            } elseif ($type === 'interact') {
+                if ($interactCount >= 1) {
+                    continue;
+                }
+                $mode = strtolower(trim((string) ($a['mode'] ?? '')));
+                if ($mode !== 'pause' && $mode !== 'quiz_gate') {
+                    continue;
+                }
+                $prompt = isset($a['prompt']) && is_string($a['prompt']) ? trim($a['prompt']) : '';
+                if ($prompt === '') {
+                    continue;
+                }
+                $label = isset($a['label']) && is_string($a['label']) ? trim($a['label']) : 'Activity';
+                $out[] = [
+                    'id' => (string) Str::ulid(),
+                    'type' => 'interact',
+                    'label' => mb_substr($label !== '' ? $label : 'Activity', 0, 120),
+                    'mode' => $mode,
+                    'prompt' => mb_substr($prompt, 0, 2000),
+                    'payload' => [],
+                ];
+                $interactCount++;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * @param  list<string>  $pdfPageDataUrls
      * @return array<string, mixed>
      */
@@ -547,6 +1322,7 @@ final class OrchestratedLessonGenerationService
             'roles' => config('tutor.lesson_generation.roles_model'),
             'outline' => config('tutor.lesson_generation.outline_model'),
             'content' => config('tutor.lesson_generation.content_model'),
+            'actions' => config('tutor.lesson_generation.actions_model'),
             default => null,
         };
         $override = is_string($key) && trim($key) !== '' ? trim($key) : null;
@@ -560,6 +1336,7 @@ final class OrchestratedLessonGenerationService
             'roles' => (int) config('tutor.lesson_generation.roles_max_tokens', 2048),
             'outline' => (int) config('tutor.lesson_generation.outline_max_tokens', 4096),
             'content' => (int) config('tutor.lesson_generation.content_max_tokens', 8192),
+            'actions' => (int) config('tutor.lesson_generation.actions_max_tokens_per_scene', 3072),
             default => 4096,
         };
     }
@@ -679,53 +1456,58 @@ final class OrchestratedLessonGenerationService
             return [
                 'content' => [
                     'type' => 'quiz',
-                    'questions' => [
-                        [
-                            'id' => (string) Str::ulid(),
-                            'type' => 'single',
-                            'prompt' => 'What did you learn about '.$spec['title'].'?',
-                            'points' => 1,
-                            'options' => [
-                                ['id' => 'a', 'label' => 'A key idea from the lesson'],
-                                ['id' => 'b', 'label' => 'Something unrelated'],
-                            ],
-                            'correctIds' => ['a'],
-                            'gradingHint' => '',
+                    'questions' => [[
+                        'id' => (string) Str::ulid(),
+                        'type' => 'single',
+                        'prompt' => 'What is the key takeaway from '.$spec['title'].'?',
+                        'points' => 1,
+                        'options' => [
+                            ['id' => 'a', 'label' => 'A key concept from this lesson'],
+                            ['id' => 'b', 'label' => 'Something unrelated'],
                         ],
-                    ],
+                        'correctIds' => ['a'],
+                        'gradingHint' => '',
+                    ]],
                 ],
             ];
         }
-
-        $obj = $spec['objective'] !== '' ? $spec['objective'] : $spec['title'];
 
         return [
             'content' => [
                 'type' => 'slide',
                 'canvas' => [
                     'title' => $spec['title'],
+                    'subtitle' => $spec['objective'] !== '' ? $spec['objective'] : '',
+                    'footer' => '',
                     'width' => 1000,
                     'height' => 562.5,
                     'elements' => [
                         [
-                            'type' => 'text',
+                            'type' => 'image',
                             'id' => (string) Str::ulid(),
-                            'x' => 48,
-                            'y' => 64,
-                            'width' => 900,
-                            'height' => 72,
-                            'fontSize' => 28,
-                            'text' => $spec['title'],
+                            'x' => 40,
+                            'y' => 165,
+                            'width' => 450,
+                            'height' => 340,
+                            'src' => 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/ac/No_image_available.svg/480px-No_image_available.svg.png',
+                            'alt' => $spec['title'],
                         ],
                         [
-                            'type' => 'text',
+                            'type' => 'card',
                             'id' => (string) Str::ulid(),
-                            'x' => 48,
-                            'y' => 160,
-                            'width' => 900,
-                            'height' => 360,
-                            'fontSize' => 22,
-                            'text' => '• '.$obj."\n• Take notes and discuss with your classmates.\n• ".($spec['notes'] !== '' ? $spec['notes'] : 'Connect this to the lesson requirement.'),
+                            'x' => 510,
+                            'y' => 165,
+                            'width' => 450,
+                            'height' => 340,
+                            'title' => 'Key ideas',
+                            'bullets' => [
+                                $spec['objective'] !== '' ? $spec['objective'] : $spec['title'],
+                                'Review the material and take notes.',
+                                $spec['notes'] !== '' ? $spec['notes'] : 'Connect this to what you already know.',
+                            ],
+                            'caption' => '',
+                            'accent' => 'sky',
+                            'icon' => '💡',
                         ],
                     ],
                 ],
