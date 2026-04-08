@@ -395,13 +395,21 @@ export default function Home({ healthUrl, lessons = [], languageOptions = [] }) 
                                             <input type="checkbox" checked={enableWebSearch} onChange={(e) => setEnableWebSearch(e.target.checked)} />
                                             Web search (when backend supports it for this pipeline)
                                         </label>
-                                        <label className="flex items-center gap-2">
-                                            <input
-                                                type="checkbox"
-                                                checked={enableImageGeneration}
-                                                onChange={(e) => setEnableImageGeneration(e.target.checked)}
-                                            />
-                                            Image generation
+                                        <label className="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-2">
+                                            <span className="flex items-center gap-2">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={enableImageGeneration}
+                                                    onChange={(e) => setEnableImageGeneration(e.target.checked)}
+                                                />
+                                                Image generation
+                                            </span>
+                                            <span className="text-xs text-zinc-500 sm:ml-0">
+                                                With PDF page images: optional extra AI diagrams. Without PDF thumbnails,
+                                                slide pictures use the image API when a key is set: TUTOR_IMAGE_API_KEY,
+                                                TUTOR_IMAGE_AI_KEY, IMAGE_NANO_BANANA_API_KEY (plus matching base URL), or
+                                                the default OpenAI key.
+                                            </span>
                                         </label>
                                         <label className="flex items-center gap-2">
                                             <input

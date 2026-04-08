@@ -5,16 +5,26 @@ namespace App\Services\LessonGeneration;
 use App\Jobs\ProcessLessonGenerationJob;
 use App\Models\LessonGenerationJob;
 use App\Services\Ai\LlmClient;
+use App\Services\Ai\LlmExchangeLogger;
+use App\Services\Ai\LlmLogContext;
+use App\Services\MediaGeneration\GeneratedMediaStorage;
+use App\Services\MediaGeneration\ImageGenerationException;
+use App\Services\MediaGeneration\OpenAiImageGenerator;
+use App\Support\ApiJson;
 use App\Support\LessonGeneration\CanvasSpotlightOrdering;
 use App\Support\LessonGeneration\ClassroomRolesNormalizer;
 use App\Support\LessonGeneration\LessonGenerationPhases;
+use App\Support\LessonGeneration\LessonSlideImageModeration;
 use App\Support\LessonGeneration\PdfPageImageHydration;
 use App\Support\LessonGeneration\PipelineStepException;
+use App\Support\LessonGeneration\SlideAiImageHydration;
 use App\Support\LessonGeneration\SlideVisualFallback;
 use App\Support\LessonGeneration\StreamingLessonOutlineParser;
+use App\Support\Tutor\TeachingActionsValidator;
 use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use JsonException;
 use Throwable;
@@ -40,6 +50,13 @@ final class OrchestratedLessonGenerationService
         $pdf = is_array($req) && isset($req['pdfContent']) ? (string) $req['pdfContent'] : '';
         $pdfExcerpt = $pdf !== '' ? mb_substr($pdf, 0, 12000) : '';
         $pdfPageImages = $this->pdfPageImagesFromRequest(is_array($req) ? $req : null);
+        $wantsAiSlideImages = is_array($req) && filter_var($req['enableImageGeneration'] ?? false, FILTER_VALIDATE_BOOL);
+        $imageKeyOk = (string) config('tutor.image_generation.api_key') !== '';
+        // No PDF: gen_img placeholders are resolved when "Image generation" is on.
+        // SlideAiImageHydration replaces broken http(s) slide URLs (Commons "No_image_available", example.com, etc.)
+        // and unfilled pdf_page refs when Image generation + image API key are set — not only for PDF-backed lessons,
+        // so no-PDF runs are not stuck on Wikipedia sentinel thumbnails.
+        $runAiSlideHydration = $imageKeyOk && $wantsAiSlideImages;
 
         $baseUrl = (string) config('tutor.default_chat.base_url');
         $apiKey = (string) config('tutor.default_chat.api_key');
@@ -55,210 +72,278 @@ final class OrchestratedLessonGenerationService
             return;
         }
 
-        $job->update([
-            'status' => 'running',
-            'phase' => LessonGenerationPhases::CLASSROOM_ROLES,
-            'progress' => 8,
-            'phase_detail' => ['message' => 'Generating classroom roles', 'pipelineStep' => 'roles'],
-            'error' => null,
+        $jobUserId = isset($job->user_id) && is_numeric($job->user_id) ? (int) $job->user_id : null;
+        LlmLogContext::push([
+            'user_id' => $jobUserId,
+            'source' => 'lesson_generation',
+            'lesson_generation_job_id' => (string) $job->id,
         ]);
+        try {
 
-        $userBase = $this->buildUserContext($requirement, $pdfExcerpt);
-
-        // --- Step 1: roles + stage stub ---
-        $systemRoles = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with keys: '
-            .'stage (object: id empty string, name, description, language), '
-            .'classroomRoles (object: version 1, personas: array of 3-5). Each persona: id (string), role ("teacher"|"assistant"|"student"), '
-            .'name (string), bio (string, one or two sentences), optional accentColor (string "#RRGGBB" hex). '
-            .'Use language: '.$language.'.';
-
-        $decodedRoles = $this->chatJson($baseUrl, $apiKey, 'roles', $systemRoles, $userBase, 0.35);
-
-        $stage = is_array($decodedRoles['stage'] ?? null) ? $decodedRoles['stage'] : [];
-        $lessonName = is_string($stage['name'] ?? null) && trim((string) $stage['name']) !== ''
-            ? trim((string) $stage['name'])
-            : 'Generated lesson';
-
-        $rolesPayload = ClassroomRolesNormalizer::normalize(
-            is_array($decodedRoles['classroomRoles'] ?? null) ? $decodedRoles['classroomRoles'] : null,
-            $requirement,
-            $lessonName,
-        );
-
-        $job->update([
-            'classroom_roles' => $rolesPayload,
-            'progress' => 18,
-            'phase_detail' => ['message' => 'Roles saved; drafting outline', 'pipelineStep' => 'roles'],
-            'result' => array_merge(is_array($job->result) ? $job->result : [], [
-                'partial' => true,
-                'pipelineStep' => 'roles',
-                'stage' => $stage,
-                'classroomRoles' => $rolesPayload,
-            ]),
-        ]);
-        $job->refresh();
-
-        // --- Step 2: outline ---
-        $job->update([
-            'phase' => LessonGenerationPhases::COURSE_OUTLINE,
-            'progress' => 28,
-            'phase_detail' => ['message' => 'Structuring lesson outline', 'pipelineStep' => 'outline'],
-        ]);
-
-        $personasSummary = $this->summarizePersonas($rolesPayload);
-        $systemOutline = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with key: '
-            .'outline (array of 3-8 items). Each item: id (string, unique), type ("slide"|"quiz"), title (string), order (int starting 0), '
-            .'objective (string, learning goal for that scene), notes (string, optional teacher notes). '
-            .'Order must be contiguous. Use language: '.$language.'.';
-
-        $userOutline = $userBase."\n\nClassroom personas (names/roles):\n".$personasSummary;
-
-        $outline = $this->generateOutline($job, $baseUrl, $apiKey, $systemOutline, $userOutline, 0.35, $requirement, $lessonName);
-
-        $job->update([
-            'progress' => 38,
-            'phase_detail' => ['message' => 'Outline ready; writing slides', 'pipelineStep' => 'outline'],
-            'result' => array_merge(is_array($job->result) ? $job->result : [], [
-                'partial' => true,
-                'pipelineStep' => 'outline',
-                'outlineStreaming' => false,
-                'outline' => $outline,
-            ]),
-        ]);
-        $job->refresh();
-
-        // --- Step 3: full scenes ---
-        $job->update([
-            'phase' => LessonGenerationPhases::PAGE_CONTENT,
-            'progress' => 48,
-            'phase_detail' => ['message' => 'Building slide and quiz content', 'pipelineStep' => 'content'],
-        ]);
-
-        $outlineJson = json_encode($outline, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-        $rolesJson = json_encode($rolesPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-        $personasSummary = $this->summarizePersonas($rolesPayload);
-
-        $layoutRules = $this->buildLayoutRules($pdfPageImages);
-        $visionBlock = $this->buildVisionBlock($pdfPageImages);
-
-        if (config('tutor.lesson_generation.content_per_scene', true)) {
-            $aligned = $this->generateSceneContentsPerScene(
-                $job,
-                $baseUrl,
-                $apiKey,
-                $userBase,
-                $outline,
-                $personasSummary,
-                $language,
-                $pdfPageImages,
-                $layoutRules,
-                $visionBlock,
-                0.4,
-            );
-        } else {
-            $systemContent = $this->buildBatchedContentSystemPrompt($language, $layoutRules, $visionBlock);
-            $userContent = $userBase."\n\nOUTLINE (follow ids, types, order exactly):\n".$outlineJson
-                ."\n\nCLASSROOM_ROLES:\n".$rolesJson;
-
-            $decodedContent = $this->chatJsonContentScenes($baseUrl, $apiKey, $systemContent, $userContent, 0.4, $pdfPageImages);
-
-            $rawScenes = is_array($decodedContent['scenes'] ?? null) ? $decodedContent['scenes'] : [];
-            $aligned = $this->alignScenesToOutline($rawScenes, $outline);
-        }
-
-        $stageDesc = is_string($stage['description'] ?? null) ? trim($stage['description']) : '';
-        $scenes = [];
-        foreach ($aligned as $row) {
-            $scenes[] = is_array($row)
-                ? ProcessLessonGenerationJob::enrichSlideScene($row, $stageDesc, $requirement)
-                : $row;
-        }
-
-        $scenes = PdfPageImageHydration::hydrateScenes($scenes, $pdfPageImages);
-
-        foreach ($scenes as $i => $row) {
-            if (is_array($row)) {
-                $scenes[$i] = SlideVisualFallback::applyToScene($row, $requirement);
-            }
-        }
-
-        $stageId = (string) Str::ulid();
-        $stage['id'] = $stageId;
-
-        $job->update([
-            'progress' => 62,
-            'phase_detail' => ['message' => 'Draft scenes ready; wiring narration', 'pipelineStep' => 'content'],
-            'result' => array_merge(is_array($job->result) ? $job->result : [], [
-                'partial' => true,
-                'pipelineStep' => 'content',
-                'stage' => $stage,
-                'classroomRoles' => $rolesPayload,
-                'outline' => $outline,
-                'scenes' => $scenes,
-            ]),
-        ]);
-        $job->refresh();
-
-        if (config('tutor.lesson_generation.content_actions_llm', true)) {
             $job->update([
-                'phase' => LessonGenerationPhases::TEACHING_ACTIONS,
-                'progress' => 70,
-                'phase_detail' => ['message' => 'Generating voiceover and teaching actions per scene', 'pipelineStep' => 'actions'],
+                'status' => 'running',
+                'phase' => LessonGenerationPhases::CLASSROOM_ROLES,
+                'progress' => 8,
+                'phase_detail' => ['message' => 'Generating classroom roles', 'pipelineStep' => 'roles'],
+                'error' => null,
             ]);
-            $scenes = $this->generateSceneActionsPerSceneLlm(
-                $job,
-                $baseUrl,
-                $apiKey,
-                $scenes,
-                $outline,
-                $rolesPayload,
-                $personasSummary,
-                $language,
-                $userBase,
+
+            $userBase = $this->buildUserContext($requirement, $pdfExcerpt);
+
+            // --- Step 1: roles + stage stub ---
+            $systemRoles = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with keys: '
+                .'stage (object: id empty string, name, description, language), '
+                .'classroomRoles (object: version 1, personas: array of 3-5). Each persona: id (string), role ("teacher"|"assistant"|"student"), '
+                .'name (string), bio (string, one or two sentences), optional accentColor (string "#RRGGBB" hex). '
+                .'Use language: '.$language.'.';
+
+            $decodedRoles = $this->chatJson($baseUrl, $apiKey, 'roles', $systemRoles, $userBase, 0.35);
+
+            $stage = is_array($decodedRoles['stage'] ?? null) ? $decodedRoles['stage'] : [];
+            $lessonName = is_string($stage['name'] ?? null) && trim((string) $stage['name']) !== ''
+                ? trim((string) $stage['name'])
+                : 'Generated lesson';
+
+            $rolesPayload = ClassroomRolesNormalizer::normalize(
+                is_array($decodedRoles['classroomRoles'] ?? null) ? $decodedRoles['classroomRoles'] : null,
                 $requirement,
+                $lessonName,
             );
-            $job->refresh();
+
             $job->update([
+                'classroom_roles' => $rolesPayload,
+                'progress' => 18,
+                'phase_detail' => ['message' => 'Roles saved; drafting outline', 'pipelineStep' => 'roles'],
                 'result' => array_merge(is_array($job->result) ? $job->result : [], [
                     'partial' => true,
-                    'pipelineStep' => 'actions',
+                    'pipelineStep' => 'roles',
                     'stage' => $stage,
                     'classroomRoles' => $rolesPayload,
-                    'outline' => $outline,
-                    'scenes' => $scenes,
                 ]),
             ]);
+            $job->refresh();
+
+            // --- Step 2: outline ---
+            $job->update([
+                'phase' => LessonGenerationPhases::COURSE_OUTLINE,
+                'progress' => 28,
+                'phase_detail' => ['message' => 'Structuring lesson outline', 'pipelineStep' => 'outline'],
+            ]);
+
+            $personasSummary = $this->summarizePersonas($rolesPayload);
+            $systemOutline = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with key: '
+                .'outline (array of 3-8 items). Each item: id (string, unique), type ("slide"|"quiz"), title (string), order (int starting 0), '
+                .'objective (string, learning goal for that scene), notes (string, optional teacher notes). '
+                .'Order must be contiguous. Use language: '.$language.'.';
+
+            $userOutline = $userBase."\n\nClassroom personas (names/roles):\n".$personasSummary;
+
+            $outline = $this->generateOutline($job, $baseUrl, $apiKey, $systemOutline, $userOutline, 0.35, $requirement, $lessonName);
+
+            $job->update([
+                'progress' => 38,
+                'phase_detail' => ['message' => 'Outline ready; writing slides', 'pipelineStep' => 'outline'],
+                'result' => array_merge(is_array($job->result) ? $job->result : [], [
+                    'partial' => true,
+                    'pipelineStep' => 'outline',
+                    'outlineStreaming' => false,
+                    'outline' => $outline,
+                ]),
+            ]);
+            $job->refresh();
+
+            // --- Step 3: full scenes ---
+            $job->update([
+                'phase' => LessonGenerationPhases::PAGE_CONTENT,
+                'progress' => 48,
+                'phase_detail' => ['message' => 'Building slide and quiz content', 'pipelineStep' => 'content'],
+            ]);
+
+            $outlineJson = json_encode($outline, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+            $rolesJson = json_encode($rolesPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+            $personasSummary = $this->summarizePersonas($rolesPayload);
+
+            $layoutRules = $this->buildLayoutRules($pdfPageImages);
+            $visionBlock = $this->buildVisionBlock($pdfPageImages);
+
+            if (config('tutor.lesson_generation.content_per_scene', true)) {
+                $aligned = $this->generateSceneContentsPerScene(
+                    $job,
+                    $baseUrl,
+                    $apiKey,
+                    $userBase,
+                    $outline,
+                    $personasSummary,
+                    $language,
+                    $pdfPageImages,
+                    $layoutRules,
+                    $visionBlock,
+                    0.4,
+                );
+            } else {
+                $systemContent = $this->buildBatchedContentSystemPrompt($language, $layoutRules, $visionBlock);
+                $userContent = $userBase."\n\nOUTLINE (follow ids, types, order exactly):\n".$outlineJson
+                    ."\n\nCLASSROOM_ROLES:\n".$rolesJson;
+
+                $decodedContent = $this->chatJsonContentScenes($baseUrl, $apiKey, $systemContent, $userContent, 0.4, $pdfPageImages);
+
+                $rawScenes = is_array($decodedContent['scenes'] ?? null) ? $decodedContent['scenes'] : [];
+                $aligned = $this->alignScenesToOutline($rawScenes, $outline);
+            }
+
+            $stageDesc = is_string($stage['description'] ?? null) ? trim($stage['description']) : '';
+            $scenes = [];
+            foreach ($aligned as $row) {
+                $scenes[] = is_array($row)
+                    ? ProcessLessonGenerationJob::enrichSlideScene($row, $stageDesc, $requirement)
+                    : $row;
+            }
+
+            $scenes = PdfPageImageHydration::hydrateScenes($scenes, $pdfPageImages);
+
+            $renumbered = $this->renumberGenImgPlaceholders($scenes);
+            $scenes = $renumbered['scenes'];
+            $altMap = $renumbered['altMap'];
+            $imageIssues = [];
+
+            if ($wantsAiSlideImages && $altMap !== [] && $imageKeyOk) {
+                $resolved = $this->resolveGenImgPlaceholders($scenes, $altMap, $requirement, $language);
+                $scenes = $resolved['scenes'];
+                foreach ($resolved['failures'] as $row) {
+                    $imageIssues[] = array_merge($row, ['severity' => 'error']);
+                }
+            } else {
+                Log::info('[LessonGen] Skipped DALL·E / images/generations (no API calls; no llm_exchange_logs rows for endpoint /v1/images/generations)', [
+                    'lesson_generation_job_id' => (string) $job->id,
+                    'enable_image_generation_request' => $wantsAiSlideImages,
+                    'gen_img_placeholder_count' => count($altMap),
+                    'tutor_image_api_key_set' => $imageKeyOk,
+                ]);
+            }
+
+            foreach ($scenes as $i => $row) {
+                if (is_array($row)) {
+                    $scenes[$i] = SlideVisualFallback::applyToScene($row, $requirement);
+                }
+            }
+
+            if ($runAiSlideHydration) {
+                $job->update([
+                    'phase_detail' => ['message' => 'Generating slide illustrations (image API)', 'pipelineStep' => 'content'],
+                ]);
+                $hydrated = SlideAiImageHydration::hydrateScenes($scenes, $requirement, $language);
+                $scenes = $hydrated['scenes'];
+                foreach ($hydrated['failures'] as $row) {
+                    $imageIssues[] = array_merge($row, ['severity' => 'error']);
+                }
+            }
+
+            $unresolvedPlaceholders = $this->countUnresolvedSlideImagePlaceholders($scenes);
+            if ($unresolvedPlaceholders > 0 && $wantsAiSlideImages && $imageKeyOk) {
+                $imageIssues[] = [
+                    'severity' => 'warning',
+                    'step' => 'placeholders_remaining',
+                    'message' => $unresolvedPlaceholders.' slide image(s) still use placeholders after generation and fallbacks. Open the studio and replace or regenerate those images.',
+                    'code' => 'PLACEHOLDERS_REMAINING',
+                    'count' => $unresolvedPlaceholders,
+                ];
+            }
+
+            $stageId = (string) Str::ulid();
+            $stage['id'] = $stageId;
+
+            $job->update([
+                'progress' => 62,
+                'phase_detail' => ['message' => 'Draft scenes ready; wiring narration', 'pipelineStep' => 'content'],
+                'result' => array_merge(
+                    is_array($job->result) ? $job->result : [],
+                    [
+                        'partial' => true,
+                        'pipelineStep' => 'content',
+                        'stage' => $stage,
+                        'classroomRoles' => $rolesPayload,
+                        'outline' => $outline,
+                        'scenes' => $scenes,
+                    ],
+                    self::resultImageIssuesPayload($imageIssues),
+                ),
+            ]);
+            $job->refresh();
+
+            if (config('tutor.lesson_generation.content_actions_llm', true)) {
+                $job->update([
+                    'phase' => LessonGenerationPhases::TEACHING_ACTIONS,
+                    'progress' => 70,
+                    'phase_detail' => ['message' => 'Generating voiceover and teaching actions per scene', 'pipelineStep' => 'actions'],
+                ]);
+                $scenes = $this->generateSceneActionsPerSceneLlm(
+                    $job,
+                    $baseUrl,
+                    $apiKey,
+                    $scenes,
+                    $outline,
+                    $rolesPayload,
+                    $personasSummary,
+                    $language,
+                    $userBase,
+                    $requirement,
+                );
+                $job->refresh();
+                $job->update([
+                    'result' => array_merge(
+                        is_array($job->result) ? $job->result : [],
+                        [
+                            'partial' => true,
+                            'pipelineStep' => 'actions',
+                            'stage' => $stage,
+                            'classroomRoles' => $rolesPayload,
+                            'outline' => $outline,
+                            'scenes' => $scenes,
+                        ],
+                        self::resultImageIssuesPayload($imageIssues),
+                    ),
+                ]);
+            }
+
+            $job->update([
+                'phase' => LessonGenerationPhases::TEACHING_ACTIONS,
+                'progress' => 85,
+                'phase_detail' => ['message' => 'Finalizing timeline and placeholders', 'pipelineStep' => 'actions'],
+                'result' => array_merge(
+                    is_array($job->result) ? $job->result : [],
+                    [
+                        'partial' => true,
+                        'pipelineStep' => 'actions',
+                        'stage' => $stage,
+                        'classroomRoles' => $rolesPayload,
+                        'outline' => $outline,
+                        'scenes' => $scenes,
+                    ],
+                    self::resultImageIssuesPayload($imageIssues),
+                ),
+            ]);
+            $job->refresh();
+
+            $scenes = $this->applyPlaceholderActions($scenes, $rolesPayload, $pdfPageImages !== []);
+
+            $job->update([
+                'status' => 'completed',
+                'phase' => LessonGenerationPhases::COMPLETED,
+                'progress' => 100,
+                'phase_detail' => null,
+                'result' => array_merge(
+                    [
+                        'stage' => $stage,
+                        'scenes' => $scenes,
+                        'classroomRoles' => $rolesPayload,
+                        'outline' => $outline,
+                    ],
+                    self::resultImageIssuesPayload($imageIssues),
+                ),
+            ]);
+        } finally {
+            LlmLogContext::pop();
         }
-
-        $job->update([
-            'phase' => LessonGenerationPhases::TEACHING_ACTIONS,
-            'progress' => 85,
-            'phase_detail' => ['message' => 'Finalizing timeline and placeholders', 'pipelineStep' => 'actions'],
-            'result' => array_merge(is_array($job->result) ? $job->result : [], [
-                'partial' => true,
-                'pipelineStep' => 'actions',
-                'stage' => $stage,
-                'classroomRoles' => $rolesPayload,
-                'outline' => $outline,
-                'scenes' => $scenes,
-            ]),
-        ]);
-        $job->refresh();
-
-        $scenes = $this->applyPlaceholderActions($scenes, $rolesPayload, $pdfPageImages !== []);
-
-        $job->update([
-            'status' => 'completed',
-            'phase' => LessonGenerationPhases::COMPLETED,
-            'progress' => 100,
-            'phase_detail' => null,
-            'result' => [
-                'stage' => $stage,
-                'scenes' => $scenes,
-                'classroomRoles' => $rolesPayload,
-                'outline' => $outline,
-            ],
-        ]);
     }
 
     private function buildUserContext(string $requirement, string $pdfExcerpt): string
@@ -460,11 +545,28 @@ final class OrchestratedLessonGenerationService
                 .'Do NOT default to three equal-width concept cards when a pdf_page image can illustrate the slide; reserve three-column cards for abstract comparisons or when images are a poor fit. ';
         }
 
-        return 'NO PDF IMAGES: Still build RICH slides—never a single full-slide paragraph in one text box. For EVERY type "slide" (not quiz): '
-            .'(1) Include at least one type "image" with src a real https URL to an educational diagram (strongly prefer upload.wikimedia.org/wikipedia/commons thumbnails tied to the slide topic). Do not use example.com, placeholder hosts, or made-up URLs. '
-            .'(2) Include a type "card" titled exactly "Key ideas" with 3–5 bullets, OR—when comparing exactly three parallel ideas—THREE type "card" elements side by side (width ~300, x about 32, 340, 648, y ~188) with accents sky, emerald, violet. '
-            .'(3) Default layout: LEFT large diagram (~x=40,y=165,w=450,h=340), RIGHT "Key ideas" card (~x=510,w=460). Put the slide heading only in canvas.title/canvas.subtitle—not repeated as a giant text block. '
-            .'(4) FORBIDDEN: one text element that carries all teaching prose across the whole canvas; split ideas into cards and/or caption the diagram with short alt text. ';
+        return 'CRITICAL — When no PDF is attached: every slide image src MUST be "gen_img_1", "gen_img_2", … (globally increasing). '
+            .'Do NOT use "ai_generate:pending" or any https URL — those values are invalid and stripped by the app. '
+            ."\n\n"
+            .'NO PDF IMAGES — use AI-generated image placeholders. For EVERY type "slide" (not quiz): '
+            .'(1) Include exactly one type "image" element per slide. '
+            .'Set src to a placeholder ID: "gen_img_1" for the first image across all slides, '
+            .'"gen_img_2" for the second, etc. IDs must be globally unique across ALL scenes — '
+            .'do NOT restart numbering per scene. '
+            .'Set alt to a detailed English prompt describing the ideal educational diagram for that slide. '
+            .'The alt prompt is sent directly to the image API as-is — you control success: one clear diagram per slide, scientifically consistent labels, minimal clutter. '
+            .'RULE — one primary subject per image: prefer a single schematic vehicle, airfoil, cell, or cycle — NOT a collage of birds + paper planes + jets, or three unrelated objects side by side (that often fails safety and confuses the image model). '
+            .'RULE — force diagrams (lift/weight/thrust/drag): ONE airplane or foil in side view; state exactly four arrows with colors and directions, e.g. '
+            .'"lift up from wings in blue, weight down in red, thrust forward in green, drag backward in orange", plus "clear text labels" and background; '
+            .'do not ask for extra mascots, animals, or second aircraft unless the slide title explicitly demands comparison (then use two slides instead). '
+            .'Good flight example: "A simple bright educational infographic for high school students showing the four forces of flight around one airplane: '
+            .'lift arrows up from the wings in blue, weight down in red, thrust forward in green, drag backward in orange; clear labels, simple icons, sky-blue background." '
+            .'Water cycle example: "A bright labeled diagram for 5th graders showing evaporation, condensation, precipitation, and collection with arrows". '
+            .'(2) Include a type "card" titled exactly "Key ideas" with 3–5 bullets. '
+            .'(3) Default layout: LEFT large image (x=40, y=165, width=450, height=340), '
+            .'RIGHT "Key ideas" card (x=510, y=165, width=450, height=340). '
+            .'(4) NEVER use "ai_generate:pending", URLs, or any value other than gen_img_N as src. '
+            .'(5) NEVER produce a slide with only text elements. ';
     }
 
     private function buildBatchedContentSystemPrompt(string $language, string $layoutRules, string $visionBlock): string
@@ -480,6 +582,10 @@ final class OrchestratedLessonGenerationService
             .'NEVER produce a slide with only text elements — every slide must have at least one image or card. '
             .'card: {type:"card", id, x, y, width, height, title, bullets:["3-5 concrete bullet strings"], caption, accent:"sky"|"emerald"|"violet"|"indigo"|"amber"|"rose"|"slate", icon:"emoji"}. '
             .'image: {type:"image", id, x, y, width, height, src, alt}. '
+            .'src MUST be one of: (a) "pdf_page:N" if a PDF was uploaded, '
+            .'(b) "gen_img_1"/"gen_img_2"/etc. (globally unique across all scenes) when no PDF. '
+            .'NEVER use "ai_generate:pending" or any URL. '
+            .'alt MUST be a detailed English image prompt for this slide; follow the IMAGE ALT RULES in VISUAL DESIGN RULES above (one subject, no busy collages, explicit arrow colors for force diagrams). '
             .$visionBlock
             .'Optional legacy: body (string) on cards if bullets omitted. text element (only for small callouts): {type:"text", id, x, y, width, height, fontSize, text}. '
             .'For type "quiz": {type:"quiz", questions:[{id, type:"single", prompt, points:1, options:[{id,label}], correctIds:[], gradingHint}]}. '
@@ -500,10 +606,294 @@ final class OrchestratedLessonGenerationService
             .'Expand the outline objective and notes into concrete bullets, labels, and diagram choices—do not output a single short sentence for the whole slide. '
             .'card: {type:"card", id, x, y, width, height, title, bullets (3–5 strings), caption, accent, icon}. '
             .'image: {type:"image", id, x, y, width, height, src, alt}. '
+            .'src MUST be one of: (a) "pdf_page:N" if a PDF was uploaded, '
+            .'(b) "gen_img_1"/"gen_img_2"/etc. (globally unique across all scenes) when no PDF. '
+            .'NEVER use "ai_generate:pending" or any URL. '
+            .'alt MUST be a detailed English image prompt for this slide; follow the IMAGE ALT RULES in VISUAL DESIGN RULES above (one subject, no busy collages, explicit arrow colors for force diagrams). '
             .$visionBlock
             .'text elements: optional small callouts only. '
             .'For quiz scenes, content = {type:"quiz", questions:[{id, type:"single", prompt, points:1, options:[{id,label}], correctIds:[], gradingHint}]}. '
             .'Use language: '.$language.'.';
+    }
+
+    /**
+     * Renumber all gen_img_N placeholders across all scenes so IDs are
+     * globally unique (gen_img_1, gen_img_2, ...) and build a map of
+     * id => alt-text for the image generation step.
+     *
+     * @param  list<array<string, mixed>>  $scenes
+     * @return array{scenes: list<array<string, mixed>>, altMap: array<string, string>}
+     */
+    private function renumberGenImgPlaceholders(array $scenes): array
+    {
+        $counter = 1;
+        $altMap = [];
+
+        foreach ($scenes as &$scene) {
+            if (($scene['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $content = $scene['content'] ?? null;
+            if (! is_array($content) || ($content['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $canvas = $content['canvas'] ?? null;
+            if (! is_array($canvas)) {
+                continue;
+            }
+            $elements = $canvas['elements'] ?? [];
+            if (! is_array($elements)) {
+                continue;
+            }
+
+            foreach ($elements as &$el) {
+                if (! is_array($el) || ($el['type'] ?? '') !== 'image') {
+                    continue;
+                }
+                $src = trim((string) ($el['src'] ?? ''));
+                if (! preg_match('/^gen_img_\d+$/i', $src) && ! preg_match('/^ai_generate:/i', $src)) {
+                    continue;
+                }
+                $newId = 'gen_img_'.$counter;
+                $el['src'] = $newId;
+                $altMap[$newId] = trim((string) ($el['alt'] ?? '')) ?: 'Educational diagram for slide';
+                $counter++;
+            }
+            unset($el);
+
+            $canvas['elements'] = $elements;
+            $content['canvas'] = $canvas;
+            $scene['content'] = $content;
+        }
+        unset($scene);
+
+        return ['scenes' => $scenes, 'altMap' => $altMap];
+    }
+
+    /**
+     * Call DALL-E for each gen_img_N placeholder and replace src with a public URL.
+     * Failures are logged — the placeholder stays and SlideVisualFallback may supply an image.
+     *
+     * @param  list<array<string, mixed>>  $scenes
+     * @param  array<string, string>  $altMap  gen_img_N => DALL-E prompt
+     * @return array{scenes: list<array<string, mixed>>, failures: list<array{step: string, placeholderId: string, message: string, code: string}>}
+     */
+    private function resolveGenImgPlaceholders(array $scenes, array $altMap, string $requirement, string $language): array
+    {
+        $generator = app(OpenAiImageGenerator::class);
+        $storage = GeneratedMediaStorage::fromConfig();
+        $size = (string) config('tutor.image_generation.default_size', '1792x1024');
+        $max = max(1, min(32, (int) config('tutor.lesson_generation.ai_slide_images_max', 12)));
+
+        $resolvedUrls = [];
+        $failures = [];
+        $n = 0;
+        foreach ($altMap as $id => $prompt) {
+            if ($n >= $max) {
+                break;
+            }
+            try {
+                $result = $generator->generate(
+                    prompt: mb_substr($prompt, 0, 3800),
+                    size: $size,
+                );
+                $stored = $storage->storeBinary('lesson-images', 'png', $result['binary']);
+                $resolvedUrls[$id] = $stored['url'];
+            } catch (ImageGenerationException $e) {
+                $recovered = false;
+                $lastError = $e;
+                if ($e->errorCode === ApiJson::CONTENT_SENSITIVE) {
+                    $slideTitle = $this->slideTitleForGenImgPlaceholder($scenes, $id);
+                    $retryPrompts = [];
+                    $soft = LessonSlideImageModeration::soften($prompt);
+                    if ($soft !== '') {
+                        $retryPrompts[] = $soft;
+                    }
+                    $retryPrompts[] = LessonSlideImageModeration::minimalSafePrompt(
+                        $slideTitle !== '' ? $slideTitle : 'Lesson slide',
+                        $requirement,
+                        $language,
+                    );
+
+                    foreach ($retryPrompts as $retryPrompt) {
+                        try {
+                            $result = $generator->generate(
+                                prompt: mb_substr($retryPrompt, 0, 3800),
+                                size: $size,
+                            );
+                            $stored = $storage->storeBinary('lesson-images', 'png', $result['binary']);
+                            $resolvedUrls[$id] = $stored['url'];
+                            $recovered = true;
+                            Log::info('[LessonGen] Image generation succeeded after moderation fallback', ['id' => $id]);
+                            break;
+                        } catch (ImageGenerationException $ex) {
+                            $lastError = $ex;
+                            Log::warning('[LessonGen] Image moderation fallback attempt failed', [
+                                'id' => $id,
+                                'message' => $ex->getMessage(),
+                                'code' => $ex->errorCode,
+                            ]);
+                        }
+                    }
+                }
+                if (! $recovered) {
+                    $detail = $e->errorCode === ApiJson::CONTENT_SENSITIVE
+                        ? $e->getMessage().' Safer and minimal fallbacks were tried; last error: '.$lastError->getMessage()
+                        : $e->getMessage();
+                    $failures[] = [
+                        'step' => 'gen_img',
+                        'placeholderId' => $id,
+                        'message' => $detail,
+                        'code' => $lastError->errorCode,
+                    ];
+                    Log::warning('[LessonGen] Image generation failed (provider)', [
+                        'id' => $id,
+                        'message' => $e->getMessage(),
+                        'code' => $e->errorCode,
+                        'http' => $e->httpStatus,
+                    ]);
+                }
+            } catch (Throwable $e) {
+                $failures[] = [
+                    'step' => 'gen_img',
+                    'placeholderId' => $id,
+                    'message' => $e->getMessage(),
+                    'code' => 'UNEXPECTED',
+                ];
+                Log::warning('[LessonGen] Image generation failed', [
+                    'id' => $id,
+                    'message' => $e->getMessage(),
+                    'exception' => $e::class,
+                ]);
+            }
+            $n++;
+        }
+
+        if ($resolvedUrls === []) {
+            return ['scenes' => $scenes, 'failures' => $failures];
+        }
+
+        foreach ($scenes as &$scene) {
+            if (($scene['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $content = $scene['content'] ?? null;
+            if (! is_array($content) || ($content['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $canvas = $content['canvas'] ?? null;
+            if (! is_array($canvas)) {
+                continue;
+            }
+            $elements = $canvas['elements'] ?? [];
+            if (! is_array($elements)) {
+                continue;
+            }
+
+            foreach ($elements as &$el) {
+                if (! is_array($el) || ($el['type'] ?? '') !== 'image') {
+                    continue;
+                }
+                $src = (string) ($el['src'] ?? '');
+                if (isset($resolvedUrls[$src])) {
+                    $el['src'] = $resolvedUrls[$src];
+                }
+            }
+            unset($el);
+
+            $canvas['elements'] = $elements;
+            $content['canvas'] = $canvas;
+            $scene['content'] = $content;
+        }
+        unset($scene);
+
+        return ['scenes' => $scenes, 'failures' => $failures];
+    }
+
+    /**
+     * Scene / canvas title for the slide that still references this gen_img id (before URLs are applied).
+     */
+    private function slideTitleForGenImgPlaceholder(array $scenes, string $placeholderId): string
+    {
+        foreach ($scenes as $scene) {
+            if (($scene['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $content = $scene['content'] ?? null;
+            if (! is_array($content) || ($content['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $canvas = $content['canvas'] ?? null;
+            if (! is_array($canvas)) {
+                continue;
+            }
+            $elements = $canvas['elements'] ?? [];
+            if (! is_array($elements)) {
+                continue;
+            }
+            foreach ($elements as $el) {
+                if (! is_array($el) || ($el['type'] ?? '') !== 'image') {
+                    continue;
+                }
+                if (trim((string) ($el['src'] ?? '')) === $placeholderId) {
+                    $canvasTitle = trim((string) ($canvas['title'] ?? ''));
+                    $sceneTitle = trim((string) ($scene['title'] ?? ''));
+
+                    return $canvasTitle !== '' ? $canvasTitle : $sceneTitle;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $issues
+     * @return array<string, mixed>
+     */
+    private static function resultImageIssuesPayload(array $issues): array
+    {
+        if ($issues === []) {
+            return [];
+        }
+
+        return ['imageGenerationIssues' => $issues];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $scenes
+     */
+    private function countUnresolvedSlideImagePlaceholders(array $scenes): int
+    {
+        $n = 0;
+        foreach ($scenes as $scene) {
+            if (($scene['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $content = $scene['content'] ?? null;
+            if (! is_array($content) || ($content['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $canvas = $content['canvas'] ?? null;
+            if (! is_array($canvas)) {
+                continue;
+            }
+            $elements = $canvas['elements'] ?? [];
+            if (! is_array($elements)) {
+                continue;
+            }
+            foreach ($elements as $el) {
+                if (! is_array($el) || ($el['type'] ?? '') !== 'image') {
+                    continue;
+                }
+                $src = trim((string) ($el['src'] ?? ''));
+                if (preg_match('/^gen_img_\d+$/i', $src) === 1 || preg_match('/^ai_generate:/i', $src) === 1) {
+                    $n++;
+                }
+            }
+        }
+
+        return $n;
     }
 
     /**
@@ -660,18 +1050,32 @@ final class OrchestratedLessonGenerationService
     private function chatCompletionPool(string $baseUrl, string $apiKey, string $model, array $requests): array
     {
         $url = rtrim($baseUrl, '/').'/chat/completions';
+        $logger = app(LlmExchangeLogger::class);
+        $log = $logger->enabled();
+        $ctx = LlmExchangeLogger::mergeContext([]);
+        if ($log) {
+            foreach ($requests as $i => $req) {
+                $cid = (string) Str::ulid();
+                $requests[$i]['_llm_cid'] = $cid;
+                $logger->record('sent', $cid, $ctx['user_id'], $ctx['source'], array_merge([
+                    'model' => $model,
+                    'messages' => $req['messages'],
+                    'temperature' => $req['temperature'],
+                ], LlmClient::completionLimitPayload($req['max'])), '/chat/completions', null, ['pool_key' => $req['key']]);
+            }
+        }
+
         $responses = Http::pool(function (Pool $pool) use ($url, $apiKey, $model, $requests) {
             foreach ($requests as $req) {
                 $pool->as($req['key'])
                     ->withToken($apiKey, 'Bearer')
                     ->acceptJson()
                     ->timeout(300)
-                    ->post($url, [
+                    ->post($url, array_merge([
                         'model' => $model,
                         'messages' => $req['messages'],
                         'temperature' => $req['temperature'],
-                        'max_tokens' => $req['max'],
-                    ]);
+                    ], LlmClient::completionLimitPayload($req['max'])));
             }
         });
 
@@ -679,6 +1083,17 @@ final class OrchestratedLessonGenerationService
         foreach ($requests as $req) {
             $key = $req['key'];
             $r = $responses[$key] ?? null;
+            if ($log && isset($req['_llm_cid']) && is_string($req['_llm_cid'])) {
+                $cid = $req['_llm_cid'];
+                if ($r instanceof Response && $r->successful()) {
+                    $json = $r->json();
+                    $logger->record('received', $cid, $ctx['user_id'], $ctx['source'], is_array($json) ? $json : ['raw' => $r->body()], '/chat/completions', $r->status(), ['pool_key' => $key]);
+                } elseif ($r instanceof Response) {
+                    $logger->record('received', $cid, $ctx['user_id'], $ctx['source'], ['body' => $r->body()], '/chat/completions', $r->status(), ['pool_key' => $key, 'error' => true]);
+                } else {
+                    $logger->record('received', $cid, $ctx['user_id'], $ctx['source'], ['error' => 'no_response'], '/chat/completions', null, ['pool_key' => $key, 'error' => true]);
+                }
+            }
             if ($r instanceof Response && $r->successful()) {
                 $c = data_get($r->json(), 'choices.0.message.content');
                 $out[$key] = is_string($c) ? trim($c) : '';
@@ -902,7 +1317,7 @@ final class OrchestratedLessonGenerationService
                 $raw = $rawByKey[$req['key']] ?? '';
                 $parsed = $this->parseLlmActionsJson($raw, $teacherId, $req['scene']);
                 if ($parsed !== []) {
-                    $errs = \App\Support\Tutor\TeachingActionsValidator::messagesFor(
+                    $errs = TeachingActionsValidator::messagesFor(
                         $parsed,
                         is_array($req['scene']['content'] ?? null) ? $req['scene']['content'] : null,
                         ['classroomRoles' => $rolesPayload],
@@ -1093,11 +1508,13 @@ final class OrchestratedLessonGenerationService
         }
 
         $idSet = [];
+        $idByLower = [];
         $canvas = self::canvasFromScene($scene);
         if ($canvas !== null) {
             foreach ($canvas['elements'] ?? [] as $el) {
                 if (is_array($el) && isset($el['id']) && is_string($el['id']) && $el['id'] !== '') {
                     $idSet[$el['id']] = true;
+                    $idByLower[strtolower($el['id'])] = $el['id'];
                 }
             }
         }
@@ -1136,7 +1553,16 @@ final class OrchestratedLessonGenerationService
                     continue;
                 }
                 $eid = isset($target['elementId']) && is_string($target['elementId']) ? trim($target['elementId']) : '';
-                if ($eid === '' || $idSet === [] || ! isset($idSet[$eid])) {
+                if ($eid === '' || $idSet === []) {
+                    continue;
+                }
+                if (! isset($idSet[$eid])) {
+                    $canon = $idByLower[strtolower($eid)] ?? null;
+                    if ($canon !== null) {
+                        $eid = $canon;
+                    }
+                }
+                if (! isset($idSet[$eid])) {
                     continue;
                 }
                 $label = isset($a['label']) && is_string($a['label']) ? trim($a['label']) : 'Highlight';

@@ -1,7 +1,28 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 function newId() {
     return crypto.randomUUID();
+}
+
+/** True for slide image src values that must not be loaded as a real image URL yet. */
+function isPendingSlideImageSrc(src) {
+    if (typeof src !== 'string') {
+        return false;
+    }
+    const s = src.trim();
+    if (s === '') {
+        return false;
+    }
+    return /^pdf_page:\d+$/i.test(s) || /^gen_img_\d+$/i.test(s) || /^ai_generate:/i.test(s);
+}
+
+/** Wikimedia "No image available" (and similar) — loading it shows an unhelpful sentinel graphic in thumbnails. */
+function isNoImagePlaceholderUrl(src) {
+    if (typeof src !== 'string') {
+        return false;
+    }
+    return src.toLowerCase().includes('no_image_available');
 }
 
 export function defaultContentForSceneType(type) {
@@ -64,9 +85,10 @@ function normalizeImageElement(e) {
         return null;
     }
     const okData = /^data:image\/(jpeg|jpg|png|webp);base64,/i.test(src);
-    const okHttps = /^https:\/\//i.test(src);
-    const okPdfPlaceholder = /^pdf_page:\d+$/i.test(src);
-    if (!okData && !okHttps && !okPdfPlaceholder) {
+    // Allow http(s) and same-app absolute paths — Laravel public disk URLs are often APP_URL+/storage/... or root-relative /storage/...
+    const okHttpUrl = /^https?:\/\//i.test(src);
+    const okRootPath = src.startsWith('/') && !src.startsWith('//') && !/^javascript:/i.test(src);
+    if (!okData && !okHttpUrl && !okRootPath && !isPendingSlideImageSrc(src)) {
         return null;
     }
     const alt = typeof e.alt === 'string' ? e.alt.trim().slice(0, 500) : '';
@@ -262,7 +284,33 @@ function cardDisplayLines(el) {
 }
 
 /** Pixel-accurate slide canvas (1000×562.5 space); parent supplies scale via CSS transform. */
-export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotlightRect }) {
+export function SlideCanvasLayers({
+    canvas,
+    readOnly,
+    spotlightElementId,
+    spotlightRect,
+    enableImageLightbox = false,
+}) {
+    const [lightbox, setLightbox] = useState(null);
+
+    useEffect(() => {
+        if (!lightbox) {
+            return undefined;
+        }
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                setLightbox(null);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        const prevOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            window.removeEventListener('keydown', onKey);
+            document.body.style.overflow = prevOverflow;
+        };
+    }, [lightbox]);
+
     let spotlightBounds = null;
     if (readOnly && spotlightElementId && Array.isArray(canvas.elements)) {
         const hit = canvas.elements.find((e) => e.id === spotlightElementId);
@@ -291,6 +339,7 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
     }
 
     return (
+        <>
         <div
             className="relative bg-gradient-to-br from-slate-100/90 via-white to-sky-50/40 dark:from-slate-900 dark:via-slate-900 dark:to-indigo-950/40"
             style={{ width: canvas.width, height: canvas.height }}
@@ -310,7 +359,7 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
             ) : null}
             {canvas.elements.map((el) => {
                 if (el.type === 'image' && el.src) {
-                    const pending = /^pdf_page:\d+$/i.test(el.src);
+                    const pending = isPendingSlideImageSrc(el.src) || isNoImagePlaceholderUrl(el.src);
                     return (
                         <div
                             key={el.id}
@@ -323,11 +372,41 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
                             }}
                         >
                             {pending ? (
-                                <div className="flex h-full items-center justify-center px-2 text-center font-sans text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                                    PDF page preview (re-run generation if this stays empty)
+                                <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+                                    <div className="text-2xl">🎨</div>
+                                    <p className="font-sans text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                        {isNoImagePlaceholderUrl(el.src)
+                                            ? 'No usable image from the catalog — regenerate with Image generation on, or paste a real image URL.'
+                                            : /^pdf_page:\d+$/i.test(String(el.src).trim())
+                                              ? 'PDF page preview (re-run generation if this stays empty)'
+                                              : 'No image URL — enable Image generation when generating, or regenerate. If it persists, check the image API and storage permissions.'}
+                                    </p>
                                 </div>
+                            ) : enableImageLightbox ? (
+                                <button
+                                    type="button"
+                                    className="absolute inset-0 block h-full w-full cursor-zoom-in overflow-hidden rounded-2xl border-0 bg-transparent p-0 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 dark:focus-visible:ring-sky-500 dark:focus-visible:ring-offset-slate-900"
+                                    onClick={() => setLightbox({ src: el.src, alt: el.alt || '' })}
+                                    aria-label={
+                                        typeof el.alt === 'string' && el.alt.trim() !== ''
+                                            ? `View larger: ${el.alt}`
+                                            : 'View image larger'
+                                    }
+                                >
+                                    <img
+                                        src={el.src}
+                                        alt={el.alt || ''}
+                                        className="pointer-events-none h-full w-full object-cover"
+                                        referrerPolicy={/^https?:\/\//i.test(el.src) ? 'no-referrer' : undefined}
+                                    />
+                                </button>
                             ) : (
-                                <img src={el.src} alt={el.alt || ''} className="h-full w-full object-cover" />
+                                <img
+                                    src={el.src}
+                                    alt={el.alt || ''}
+                                    className="h-full w-full object-cover"
+                                    referrerPolicy={/^https?:\/\//i.test(el.src) ? 'no-referrer' : undefined}
+                                />
                             )}
                         </div>
                     );
@@ -440,6 +519,25 @@ export function SlideCanvasLayers({ canvas, readOnly, spotlightElementId, spotli
                 </div>
             ) : null}
         </div>
+        {lightbox && typeof document !== 'undefined'
+            ? createPortal(
+                  <div
+                      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 p-4"
+                      onClick={() => setLightbox(null)}
+                      role="presentation"
+                  >
+                      <img
+                          src={lightbox.src}
+                          alt={lightbox.alt}
+                          className="max-h-[min(90vh,100%)] max-w-[min(96vw,100%)] object-contain shadow-2xl"
+                          onClick={(e) => e.stopPropagation()}
+                          referrerPolicy={/^https?:\/\//i.test(lightbox.src) ? 'no-referrer' : undefined}
+                      />
+                  </div>,
+                  document.body,
+              )
+            : null}
+        </>
     );
 }
 
@@ -535,6 +633,7 @@ function SlideEditor({ content, onChange, readOnly, spotlightElementId, spotligh
                     readOnly={readOnly}
                     spotlightElementId={spotlightElementId}
                     spotlightRect={spotlightRect}
+                    enableImageLightbox={readOnly}
                 />
             </div>
         </div>
@@ -622,7 +721,7 @@ function SlideEditor({ content, onChange, readOnly, spotlightElementId, spotligh
                         <ul className="space-y-3">
                             {canvas.elements.map((el) => {
                                 if (el.type === 'image') {
-                                    const pending = /^pdf_page:\d+$/i.test(el.src);
+                                    const pending = isPendingSlideImageSrc(el.src) || isNoImagePlaceholderUrl(el.src);
                                     return (
                                         <li key={el.id} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
                                             <div className="flex items-center justify-between">
@@ -638,10 +737,23 @@ function SlideEditor({ content, onChange, readOnly, spotlightElementId, spotligh
                                             <div className="mt-2 max-h-40 overflow-hidden rounded border border-zinc-200 bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-900">
                                                 {pending ? (
                                                     <p className="p-3 text-xs text-amber-800 dark:text-amber-200">
-                                                        Placeholder <code className="font-mono">{el.src}</code> — save hydrated lesson or re-generate.
+                                                        {isNoImagePlaceholderUrl(el.src)
+                                                            ? 'This URL is a “no image” placeholder from Commons — regenerate with Image generation on, or paste a real image URL below.'
+                                                            : (
+                                                                  <>
+                                                                      Placeholder <code className="font-mono">{el.src}</code> — re-generate
+                                                                      with &quot;Image generation&quot; enabled (and storage writable), or
+                                                                      paste a URL / data URL below.
+                                                                  </>
+                                                              )}
                                                     </p>
                                                 ) : (
-                                                    <img src={el.src} alt={el.alt || ''} className="max-h-40 w-full object-contain" />
+                                                    <img
+                                                        src={el.src}
+                                                        alt={el.alt || ''}
+                                                        className="max-h-40 w-full object-contain"
+                                                        referrerPolicy={/^https?:\/\//i.test(el.src) ? 'no-referrer' : undefined}
+                                                    />
                                                 )}
                                             </div>
                                             <div className="mt-2 grid gap-2 sm:grid-cols-2">

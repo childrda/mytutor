@@ -64,6 +64,27 @@ class ProcessLessonGenerationJob implements ShouldQueue
      * @param  array<string, mixed>  $scene
      * @return array<string, mixed>
      */
+    /**
+     * Preserve LLM/chosen element ids when JSON decoding leaves them as strings; coerce scalars so we do not replace with ULIDs unnecessarily.
+     */
+    private static function normalizeCanvasElementId(mixed $raw): string
+    {
+        if (is_string($raw)) {
+            $s = trim($raw);
+            if ($s !== '') {
+                return mb_substr($s, 0, 128);
+            }
+        }
+        if (is_int($raw) || is_float($raw)) {
+            $s = trim((string) $raw);
+            if ($s !== '') {
+                return mb_substr($s, 0, 128);
+            }
+        }
+
+        return (string) Str::ulid();
+    }
+
     public static function enrichSlideScene(array $scene, string $stageDescription, string $requirement): array
     {
         $type = $scene['type'] ?? 'slide';
@@ -107,11 +128,12 @@ class ProcessLessonGenerationJob implements ShouldQueue
             if ($typeRaw === 'image') {
                 $src = isset($el['src']) && is_string($el['src']) ? trim($el['src']) : '';
                 if ($src === '') {
-                    continue;
+                    // Empty src was dropped entirely, so later stages never ran image API / fallbacks.
+                    $src = 'ai_generate:pending';
                 }
                 $elements[] = [
                     'type' => 'image',
-                    'id' => isset($el['id']) && is_string($el['id']) && $el['id'] !== '' ? $el['id'] : (string) Str::ulid(),
+                    'id' => self::normalizeCanvasElementId($el['id'] ?? null),
                     'x' => isset($el['x']) && is_numeric($el['x']) ? (int) $el['x'] : 40,
                     'y' => isset($el['y']) && is_numeric($el['y']) ? (int) $el['y'] : 175,
                     'width' => isset($el['width']) && is_numeric($el['width']) ? max(80, (int) $el['width']) : 440,
@@ -133,7 +155,7 @@ class ProcessLessonGenerationJob implements ShouldQueue
             }
             $elements[] = [
                 'type' => 'text',
-                'id' => isset($el['id']) && is_string($el['id']) && $el['id'] !== '' ? $el['id'] : (string) Str::ulid(),
+                'id' => self::normalizeCanvasElementId($el['id'] ?? null),
                 'x' => isset($el['x']) && is_numeric($el['x']) ? (int) $el['x'] : 48,
                 'y' => isset($el['y']) && is_numeric($el['y']) ? (int) $el['y'] : 120,
                 'width' => isset($el['width']) && is_numeric($el['width']) ? (int) $el['width'] : 420,
@@ -259,7 +281,7 @@ class ProcessLessonGenerationJob implements ShouldQueue
 
         return [
             'type' => 'card',
-            'id' => isset($el['id']) && is_string($el['id']) && $el['id'] !== '' ? $el['id'] : (string) Str::ulid(),
+            'id' => self::normalizeCanvasElementId($el['id'] ?? null),
             'x' => isset($el['x']) && is_numeric($el['x']) ? (int) $el['x'] : 48,
             'y' => isset($el['y']) && is_numeric($el['y']) ? (int) $el['y'] : 196,
             'width' => isset($el['width']) && is_numeric($el['width']) ? max(120, (int) $el['width']) : 290,

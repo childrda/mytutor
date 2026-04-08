@@ -57,7 +57,10 @@ class QuizGradeController extends Controller
             $text = trim(LlmClient::chat($baseUrl, $apiKey, $model, [
                 ['role' => 'system', 'content' => $system],
                 ['role' => 'user', 'content' => $user],
-            ], 0.2, 512));
+            ], 0.2, 512, [
+                'user_id' => $request->user()?->getKey(),
+                'source' => 'quiz_grade',
+            ]));
             $text = preg_replace('/^```(?:json)?\s*/i', '', $text) ?? $text;
             $text = preg_replace('/\s*```$/', '', $text) ?? $text;
             $decoded = json_decode($text, true, 512, JSON_THROW_ON_ERROR);

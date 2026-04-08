@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Ai\LlmLogContext;
 use App\Services\StudioGeneration\StudioSceneGenerationService;
 use App\Support\ApiJson;
 use App\Support\Generate\StudioGenerationSseProtocol;
@@ -29,26 +30,34 @@ class StudioSceneGenerationController extends Controller
         $body = $request->all();
         $maxExec = (int) config('tutor.chat_stream.max_execution_seconds', 120);
 
-        return response()->stream(function () use ($body, $creds, $maxExec): void {
-            @set_time_limit($maxExec);
-            $emit = static function (string $frame): void {
-                if (connection_aborted()) {
-                    return;
-                }
-                echo $frame;
-                if (ob_get_level() > 0) {
-                    ob_flush();
-                }
-                flush();
-            };
+        return response()->stream(function () use ($body, $creds, $maxExec, $request): void {
+            LlmLogContext::push([
+                'user_id' => $this->studioLlmUserId($request),
+                'source' => 'studio_generation',
+            ]);
+            try {
+                @set_time_limit($maxExec);
+                $emit = static function (string $frame): void {
+                    if (connection_aborted()) {
+                        return;
+                    }
+                    echo $frame;
+                    if (ob_get_level() > 0) {
+                        ob_flush();
+                    }
+                    flush();
+                };
 
-            $this->studio->streamSceneOutlines(
-                $emit,
-                $creds['baseUrl'],
-                $creds['apiKey'],
-                $creds['model'],
-                is_array($body) ? $body : [],
-            );
+                $this->studio->streamSceneOutlines(
+                    $emit,
+                    $creds['baseUrl'],
+                    $creds['apiKey'],
+                    $creds['model'],
+                    is_array($body) ? $body : [],
+                );
+            } finally {
+                LlmLogContext::pop();
+            }
         }, 200, [
             'Content-Type' => 'text/event-stream',
             'Cache-Control' => 'no-cache',
@@ -64,6 +73,10 @@ class StudioSceneGenerationController extends Controller
             return $creds;
         }
 
+        LlmLogContext::push([
+            'user_id' => $this->studioLlmUserId($request),
+            'source' => 'studio_generation',
+        ]);
         try {
             $out = $this->studio->generateSceneActions(
                 $creds['baseUrl'],
@@ -81,6 +94,8 @@ class StudioSceneGenerationController extends Controller
             report($e);
 
             return ApiJson::error(ApiJson::UPSTREAM_ERROR, 502, $e->getMessage());
+        } finally {
+            LlmLogContext::pop();
         }
 
         return ApiJson::success($out);
@@ -93,6 +108,10 @@ class StudioSceneGenerationController extends Controller
             return $creds;
         }
 
+        LlmLogContext::push([
+            'user_id' => $this->studioLlmUserId($request),
+            'source' => 'studio_generation',
+        ]);
         try {
             $out = $this->studio->generateSceneContent(
                 $creds['baseUrl'],
@@ -110,6 +129,8 @@ class StudioSceneGenerationController extends Controller
             report($e);
 
             return ApiJson::error(ApiJson::UPSTREAM_ERROR, 502, $e->getMessage());
+        } finally {
+            LlmLogContext::pop();
         }
 
         return ApiJson::success($out);
@@ -122,6 +143,10 @@ class StudioSceneGenerationController extends Controller
             return $creds;
         }
 
+        LlmLogContext::push([
+            'user_id' => $this->studioLlmUserId($request),
+            'source' => 'studio_generation',
+        ]);
         try {
             $out = $this->studio->generateAgentProfiles(
                 $creds['baseUrl'],
@@ -137,9 +162,27 @@ class StudioSceneGenerationController extends Controller
             report($e);
 
             return ApiJson::error(ApiJson::UPSTREAM_ERROR, 502, $e->getMessage());
+        } finally {
+            LlmLogContext::pop();
         }
 
         return ApiJson::success($out);
+    }
+
+    private function studioLlmUserId(Request $request): ?int
+    {
+        $id = $request->user()?->getKey();
+        if ($id === null || $id === '') {
+            return null;
+        }
+        if (is_int($id)) {
+            return $id;
+        }
+        if (is_string($id) && ctype_digit($id)) {
+            return (int) $id;
+        }
+
+        return null;
     }
 
     /**

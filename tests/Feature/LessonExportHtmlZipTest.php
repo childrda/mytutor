@@ -85,6 +85,61 @@ class LessonExportHtmlZipTest extends TestCase
     }
 
     #[Test]
+    public function export_includes_placeholder_block_for_gen_img_src(): void
+    {
+        $user = User::factory()->create();
+        $lesson = TutorLesson::factory()->for($user)->create(['name' => 'Placeholder export']);
+        TutorScene::query()->create([
+            'tutor_lesson_id' => $lesson->id,
+            'type' => 'slide',
+            'title' => 'Slide with pending image',
+            'scene_order' => 0,
+            'content' => [
+                'type' => 'slide',
+                'canvas' => [
+                    'title' => 'Topic',
+                    'elements' => [
+                        [
+                            'type' => 'image',
+                            'id' => 'im1',
+                            'src' => 'gen_img_1',
+                            'alt' => 'Diagram brief for export test.',
+                            'x' => 40,
+                            'y' => 100,
+                            'width' => 400,
+                            'height' => 300,
+                        ],
+                    ],
+                ],
+            ],
+            'actions' => null,
+            'whiteboard' => null,
+            'multi_agent' => null,
+        ]);
+
+        $response = $this->actingAs($user)->get("/tutor-api/lessons/{$lesson->id}/export/html-zip");
+        $response->assertOk();
+        $base = $response->baseResponse;
+        $this->assertInstanceOf(BinaryFileResponse::class, $base);
+        $zipPath = $base->getFile()->getPathname();
+
+        $tmp = tempnam(sys_get_temp_dir(), 'mtexp2');
+        $this->assertNotFalse($tmp);
+        copy($zipPath, $tmp);
+
+        $zip = new ZipArchive;
+        $this->assertTrue($zip->open($tmp));
+        $html = (string) $zip->getFromName('index.html');
+        $this->assertStringContainsString('slide-img-placeholder', $html);
+        $this->assertStringContainsString('gen_img_1', $html);
+        $this->assertStringContainsString('Diagram brief for export test.', $html);
+        $this->assertStringNotContainsString('src="gen_img_1"', $html);
+
+        $zip->close();
+        @unlink($tmp);
+    }
+
+    #[Test]
     public function other_user_gets_forbidden(): void
     {
         $owner = User::factory()->create();

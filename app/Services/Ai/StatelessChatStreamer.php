@@ -35,6 +35,9 @@ class StatelessChatStreamer
      * @param  Closure(string): void  $emit  Raw SSE line writer (without double newline)
      * @param  array<string, mixed>  $directorStateBaseline  Sanitized client directorState for merge into `done`
      */
+    /**
+     * @param  array{user_id?: int|null, source?: string}  $llmLogContext
+     */
     public function stream(
         string $baseUrl,
         string $apiKey,
@@ -44,6 +47,7 @@ class StatelessChatStreamer
         array $agentIds,
         Closure $emit,
         array $directorStateBaseline = [],
+        array $llmLogContext = [],
     ): void {
         $url = rtrim($baseUrl, '/').'/chat/completions';
         $client = $this->client();
@@ -78,7 +82,7 @@ class StatelessChatStreamer
                 ];
             }
 
-            $turn = $this->runAgentOpenAiTurn($client, $url, $apiKey, $model, $openAiMessages, $messageId, $emit);
+            $turn = $this->runAgentOpenAiTurn($client, $url, $apiKey, $model, $openAiMessages, $messageId, $emit, $llmLogContext);
             if ($turn === false) {
                 return;
             }
@@ -126,6 +130,7 @@ class StatelessChatStreamer
 
     /**
      * @param  list<array<string, mixed>>  $openAiMessages
+     * @param  array{user_id?: int|null, source?: string}  $llmLogContext
      * @return array{content: string, actions: int}|false
      */
     private function runAgentOpenAiTurn(
@@ -136,7 +141,10 @@ class StatelessChatStreamer
         array $openAiMessages,
         string $messageId,
         Closure $emit,
+        array $llmLogContext = [],
     ): array|false {
+        $logger = app(LlmExchangeLogger::class);
+        $ctx = LlmExchangeLogger::mergeContext($llmLogContext);
         $toolsDef = ChatToolRegistry::openAiToolDefinitions();
         $usesTools = $toolsDef !== [];
 
@@ -150,6 +158,15 @@ class StatelessChatStreamer
             $payload['tool_choice'] = 'auto';
         }
 
+        $cidPrimary = (string) Str::ulid();
+        if ($logger->enabled()) {
+            $logger->record('sent', $cidPrimary, $ctx['user_id'], $ctx['source'], $payload, '/chat/completions', null, [
+                'tutor_stream' => true,
+                'messageId' => $messageId,
+                'phase' => 'primary',
+            ]);
+        }
+
         try {
             $response = $client->post($url, [
                 'json' => $payload,
@@ -157,6 +174,16 @@ class StatelessChatStreamer
                 'headers' => $this->requestHeaders($apiKey),
             ]);
         } catch (GuzzleException $e) {
+            if ($logger->enabled()) {
+                $logger->record('received', $cidPrimary, $ctx['user_id'], $ctx['source'], [
+                    'error' => self::formatUpstreamHttpError($e),
+                ], '/chat/completions', null, [
+                    'tutor_stream' => true,
+                    'messageId' => $messageId,
+                    'phase' => 'primary',
+                    'request_failed' => true,
+                ]);
+            }
             $emit(ChatSseProtocol::frame(ChatSseProtocol::TYPE_ERROR, [
                 'message' => self::formatUpstreamHttpError($e),
             ]));
@@ -164,7 +191,22 @@ class StatelessChatStreamer
             return false;
         }
 
+        $statusPrimary = $response->getStatusCode();
         $read = $this->readSseStream($response->getBody(), $messageId, $emit);
+        if ($logger->enabled()) {
+            $logger->record('received', $cidPrimary, $ctx['user_id'], $ctx['source'], [
+                'content' => $read['content'],
+                'toolCalls' => $read['toolCalls'],
+                'finishReason' => $read['finishReason'],
+                'aborted' => $read['aborted'],
+                'upstreamError' => $read['upstreamError'] ?? false,
+                'sse_transcript' => $read['sse_transcript'] ?? '',
+            ], '/chat/completions', $statusPrimary, [
+                'tutor_stream' => true,
+                'messageId' => $messageId,
+                'phase' => 'primary',
+            ]);
+        }
         if ($read['aborted'] || ($read['upstreamError'] ?? false)) {
             return false;
         }
@@ -256,6 +298,15 @@ class StatelessChatStreamer
             $followPayload['tool_choice'] = 'none';
         }
 
+        $cidFollow = (string) Str::ulid();
+        if ($logger->enabled()) {
+            $logger->record('sent', $cidFollow, $ctx['user_id'], $ctx['source'], $followPayload, '/chat/completions', null, [
+                'tutor_stream' => true,
+                'messageId' => $messageId,
+                'phase' => 'tool_followup',
+            ]);
+        }
+
         try {
             $response2 = $client->post($url, [
                 'json' => $followPayload,
@@ -263,6 +314,16 @@ class StatelessChatStreamer
                 'headers' => $this->requestHeaders($apiKey),
             ]);
         } catch (GuzzleException $e) {
+            if ($logger->enabled()) {
+                $logger->record('received', $cidFollow, $ctx['user_id'], $ctx['source'], [
+                    'error' => self::formatUpstreamHttpError($e),
+                ], '/chat/completions', null, [
+                    'tutor_stream' => true,
+                    'messageId' => $messageId,
+                    'phase' => 'tool_followup',
+                    'request_failed' => true,
+                ]);
+            }
             $emit(ChatSseProtocol::frame(ChatSseProtocol::TYPE_ERROR, [
                 'message' => self::formatUpstreamHttpError($e),
             ]));
@@ -270,7 +331,22 @@ class StatelessChatStreamer
             return false;
         }
 
+        $statusFollow = $response2->getStatusCode();
         $read2 = $this->readSseStream($response2->getBody(), $messageId, $emit);
+        if ($logger->enabled()) {
+            $logger->record('received', $cidFollow, $ctx['user_id'], $ctx['source'], [
+                'content' => $read2['content'],
+                'toolCalls' => $read2['toolCalls'],
+                'finishReason' => $read2['finishReason'],
+                'aborted' => $read2['aborted'],
+                'upstreamError' => $read2['upstreamError'] ?? false,
+                'sse_transcript' => $read2['sse_transcript'] ?? '',
+            ], '/chat/completions', $statusFollow, [
+                'tutor_stream' => true,
+                'messageId' => $messageId,
+                'phase' => 'tool_followup',
+            ]);
+        }
         if ($read2['aborted'] || ($read2['upstreamError'] ?? false)) {
             return false;
         }
@@ -287,7 +363,8 @@ class StatelessChatStreamer
      *     toolCalls: list<array{id: string, name: string, arguments: string}>,
      *     finishReason: ?string,
      *     aborted: bool,
-     *     upstreamError?: bool
+     *     upstreamError?: bool,
+     *     sse_transcript: string
      * }
      */
     private function readSseStream(
@@ -300,6 +377,8 @@ class StatelessChatStreamer
         $toolCallAcc = [];
         $finishReason = null;
         $aborted = false;
+        $sseTranscript = '';
+        $sseCap = 500_000;
 
         try {
             while (! $body->eof()) {
@@ -321,6 +400,7 @@ class StatelessChatStreamer
                         'finishReason' => $finishReason,
                         'aborted' => false,
                         'upstreamError' => true,
+                        'sse_transcript' => $sseTranscript,
                     ];
                 }
 
@@ -337,6 +417,14 @@ class StatelessChatStreamer
                     }
                     if (! str_starts_with($line, 'data:')) {
                         continue;
+                    }
+                    if (strlen($sseTranscript) < $sseCap) {
+                        $add = $line."\n";
+                        $room = $sseCap - strlen($sseTranscript);
+                        if (strlen($add) > $room) {
+                            $add = $room > 0 ? (substr($add, 0, $room)."\n…[capped]") : '';
+                        }
+                        $sseTranscript .= $add;
                     }
                     $json = trim(substr($line, 5));
                     if ($json === '[DONE]') {
@@ -383,6 +471,7 @@ class StatelessChatStreamer
             'toolCalls' => $this->finalizeToolCallsArray($toolCallAcc),
             'finishReason' => $finishReason,
             'aborted' => $aborted,
+            'sse_transcript' => $sseTranscript,
         ];
     }
 

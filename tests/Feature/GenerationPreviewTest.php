@@ -129,4 +129,48 @@ class GenerationPreviewTest extends TestCase
             ->assertJsonPath('result.outline.0.title', 'One')
             ->assertJsonPath('result.scenes.0.title', 'One');
     }
+
+    public function test_poll_rewrites_absolute_storage_image_urls_to_root_relative_paths(): void
+    {
+        $user = User::factory()->create();
+        $scenes = [
+            [
+                'id' => 'slide-0',
+                'type' => 'slide',
+                'title' => 'S',
+                'order' => 0,
+                'content' => [
+                    'type' => 'slide',
+                    'canvas' => [
+                        'title' => 'T',
+                        'elements' => [
+                            [
+                                'type' => 'image',
+                                'id' => 'im1',
+                                'src' => 'http://localhost:8080/storage/generated/image/2026/04/07/01abc.png',
+                                'x' => 0,
+                                'y' => 0,
+                                'width' => 100,
+                                'height' => 100,
+                                'alt' => '',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+        $job = LessonGenerationJob::query()->create([
+            'user_id' => $user->id,
+            'status' => 'completed',
+            'phase' => 'completed',
+            'progress' => 100,
+            'request' => ['requirement' => 'x', 'language' => 'en'],
+            'result' => ['scenes' => $scenes],
+        ]);
+
+        $this->actingAs($user)
+            ->getJson('/api/generate-lesson/'.$job->id)
+            ->assertOk()
+            ->assertJsonPath('result.scenes.0.content.canvas.elements.0.src', '/storage/generated/image/2026/04/07/01abc.png');
+    }
 }

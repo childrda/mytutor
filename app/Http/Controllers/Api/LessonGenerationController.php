@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Concerns\ResolvesPublicBaseUrl;
 use App\Http\Controllers\Controller;
+use App\Http\Resources\TutorSceneResource;
 use App\Models\LessonGenerationJob;
 use App\Services\LessonGeneration\LessonGenerationService;
 use App\Support\ApiJson;
@@ -61,6 +62,11 @@ class LessonGenerationController extends Controller
             $classroomRoles = $job->result['classroomRoles'] ?? null;
         }
 
+        $result = $job->result;
+        if (is_array($result) && isset($result['scenes']) && is_array($result['scenes'])) {
+            $result['scenes'] = TutorSceneResource::normalizeScenesListStorageUrls($result['scenes']);
+        }
+
         return ApiJson::success([
             'jobId' => $job->id,
             'status' => $job->status,
@@ -68,7 +74,7 @@ class LessonGenerationController extends Controller
             'progress' => $job->progress,
             'phaseDetail' => $job->phase_detail,
             'classroomRoles' => $classroomRoles,
-            'result' => $job->result,
+            'result' => $result,
             'error' => $job->error,
             'updatedAt' => $job->updated_at?->toIso8601String(),
         ]);

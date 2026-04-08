@@ -2,6 +2,7 @@
 
 namespace App\Support\LessonGeneration;
 
+use App\Services\MediaGeneration\GeneratedMediaStorage;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
@@ -17,8 +18,18 @@ final class SlideVisualFallback
     private const DIAGRAMS = [
         [
             'needles' => ['water cycle', 'hydrologic cycle', 'hydrological cycle'],
-            'url' => 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/19/Watercycle.jpg/640px-Watercycle.jpg',
+            // Former Watercycle.jpg thumb at 1/19/ now 404s on Commons; use a stable CC0 diagram.
+            'url' => 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3d/Water_cycle_flowchart.png/520px-Water_cycle_flowchart.png',
             'alt' => 'Diagram of the water cycle',
+        ],
+        [
+            'needles' => [
+                'airplane', 'aeroplane', 'airliner', 'aircraft', 'fuselage', 'jet engine',
+                'lift and drag', 'thrust and drag', 'four forces', 'principles of flight',
+                'how planes fly', 'why planes fly', 'what makes an airplane fly',
+            ],
+            'url' => 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5b/Forces_on_an_aircraft.svg/520px-Forces_on_an_aircraft.svg.png',
+            'alt' => 'Forces on an aircraft: lift, weight, thrust, and drag',
         ],
         [
             'needles' => ['photosynthesis'],
@@ -63,6 +74,10 @@ final class SlideVisualFallback
      */
     public static function applyToScene(array $scene, string $requirement): array
     {
+        if (! (bool) config('tutor.lesson_generation.slide_visual_fallback', true)) {
+            return $scene;
+        }
+
         if (($scene['type'] ?? 'slide') !== 'slide') {
             return $scene;
         }
@@ -81,10 +96,28 @@ final class SlideVisualFallback
         if (self::canvasHasRenderableImage($els)) {
             return $scene;
         }
+
+        $hasPlaceholderImage = false;
+        foreach ($els as $el) {
+            if (is_array($el) && ($el['type'] ?? '') === 'image') {
+                $s = trim((string) ($el['src'] ?? ''));
+                if ($s !== '' && self::isPlaceholderSlideImageSrc($s)) {
+                    $hasPlaceholderImage = true;
+                    break;
+                }
+            }
+        }
+
+        $hasCard = false;
         foreach ($els as $el) {
             if (is_array($el) && ($el['type'] ?? '') === 'card') {
-                return $scene;
+                $hasCard = true;
+                break;
             }
+        }
+
+        if ($hasCard && ! $hasPlaceholderImage) {
+            return $scene;
         }
 
         $title = trim((string) ($scene['title'] ?? ''));
@@ -96,6 +129,27 @@ final class SlideVisualFallback
             return $scene;
         }
 
+        if ($hasPlaceholderImage) {
+            foreach ($els as $i => $el) {
+                if (! is_array($el) || ($el['type'] ?? '') !== 'image') {
+                    continue;
+                }
+                $s = trim((string) ($el['src'] ?? ''));
+                if ($s !== '' && self::isPlaceholderSlideImageSrc($s)) {
+                    $els[$i]['src'] = self::resolvePublicDiagramUrl($match['url']);
+                    $keepAlt = trim((string) ($els[$i]['alt'] ?? ''));
+                    if ($keepAlt === '') {
+                        $els[$i]['alt'] = $match['alt'];
+                    }
+                }
+            }
+            $canvas['elements'] = $els;
+            $content['canvas'] = $canvas;
+            $scene['content'] = $content;
+
+            return $scene;
+        }
+
         $image = [
             'type' => 'image',
             'id' => (string) Str::ulid(),
@@ -103,7 +157,7 @@ final class SlideVisualFallback
             'y' => 165,
             'width' => 450,
             'height' => 340,
-            'src' => $match['url'],
+            'src' => self::resolvePublicDiagramUrl($match['url']),
             'alt' => $match['alt'],
         ];
 
@@ -141,6 +195,9 @@ final class SlideVisualFallback
             if (str_starts_with($src, 'https://') || str_starts_with($src, 'http://')) {
                 return true;
             }
+            if (str_starts_with($src, '/') && ! str_starts_with($src, '//')) {
+                return true;
+            }
             if (str_starts_with($src, 'data:image')) {
                 return true;
             }
@@ -150,6 +207,106 @@ final class SlideVisualFallback
         }
 
         return false;
+    }
+
+    private static function isPlaceholderSlideImageSrc(string $src): bool
+    {
+        if (preg_match('/^gen_img_\d+$/i', $src) === 1) {
+            return true;
+        }
+        if (preg_match('/^ai_generate:/i', $src) === 1) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Hotlinked upload.wikimedia.org files often fail in the browser (privacy tools, referrer policy).
+     * Optionally copy bytes server-side into the public disk so slides use same-origin /storage URLs.
+     */
+    private static function resolvePublicDiagramUrl(string $remoteUrl): string
+    {
+        if (! (bool) config('tutor.lesson_generation.mirror_wikimedia_fallback_images', true)) {
+            return $remoteUrl;
+        }
+
+        return self::mirrorWikimediaDiagramToLocal($remoteUrl) ?? $remoteUrl;
+    }
+
+    private static function mirrorWikimediaDiagramToLocal(string $url): ?string
+    {
+        $host = parse_url($url, PHP_URL_HOST);
+        $host = is_string($host) ? strtolower($host) : '';
+        if ($host !== 'upload.wikimedia.org') {
+            return null;
+        }
+        if (! str_starts_with(strtolower($url), 'https://')) {
+            return null;
+        }
+
+        try {
+            $response = Http::withHeaders([
+                'User-Agent' => trim((string) config('app.name', 'MyTutor')).'/1.0 (educational slide diagram mirror; +https://foundation.wikimedia.org/wiki/Policy:User-Agent_policy)',
+            ])
+                ->timeout(25)
+                ->connectTimeout(10)
+                ->get($url);
+            if (! $response->successful()) {
+                return null;
+            }
+            $binary = $response->body();
+            $len = strlen($binary);
+            if ($len < 64 || $len > 8 * 1024 * 1024) {
+                return null;
+            }
+            $ext = self::guessImageExtensionFromWikimediaResponse($url, (string) $response->header('Content-Type'), $binary);
+            if ($ext === null) {
+                return null;
+            }
+            $stored = GeneratedMediaStorage::fromConfig()->storeBinary('wikimedia-fallback', $ext, $binary);
+
+            return $stored['url'];
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private static function guessImageExtensionFromWikimediaResponse(string $url, string $contentType, string $binary): ?string
+    {
+        $ct = strtolower($contentType);
+        if (str_contains($ct, 'svg')) {
+            return 'svg';
+        }
+        if (str_contains($ct, 'png')) {
+            return 'png';
+        }
+        if (str_contains($ct, 'jpeg') || str_contains($ct, 'jpg')) {
+            return 'jpg';
+        }
+        if (str_contains($ct, 'webp')) {
+            return 'webp';
+        }
+        $path = parse_url($url, PHP_URL_PATH);
+        if (is_string($path) && preg_match('/\.(png|jpe?g|webp|svg)(?:$|[?#])/i', $path, $m)) {
+            $e = strtolower($m[1]);
+
+            return $e === 'jpeg' ? 'jpg' : $e;
+        }
+        if (str_starts_with($binary, "\xFF\xD8\xFF")) {
+            return 'jpg';
+        }
+        if (str_starts_with($binary, "\x89PNG\r\n\x1a\n")) {
+            return 'png';
+        }
+        if (str_starts_with($binary, 'RIFF') && str_contains(substr($binary, 0, 16), 'WEBP')) {
+            return 'webp';
+        }
+        if (str_starts_with(ltrim($binary), '<svg')) {
+            return 'svg';
+        }
+
+        return null;
     }
 
     /**

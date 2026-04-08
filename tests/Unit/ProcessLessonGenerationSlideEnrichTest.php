@@ -42,6 +42,35 @@ class ProcessLessonGenerationSlideEnrichTest extends TestCase
     }
 
     #[Test]
+    public function preserves_image_element_id_when_id_is_numeric_from_json(): void
+    {
+        $out = self::enrich([
+            'type' => 'slide',
+            'title' => 'Test',
+            'content' => [
+                'type' => 'slide',
+                'canvas' => [
+                    'title' => 'Test',
+                    'elements' => [
+                        [
+                            'type' => 'image',
+                            'id' => 404,
+                            'x' => 40,
+                            'y' => 100,
+                            'width' => 400,
+                            'height' => 300,
+                            'src' => 'gen_img_1',
+                            'alt' => 'Alt',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertSame('404', $out['content']['canvas']['elements'][0]['id']);
+    }
+
+    #[Test]
     public function preserves_nonempty_text_elements(): void
     {
         $out = self::enrich([
@@ -142,6 +171,39 @@ class ProcessLessonGenerationSlideEnrichTest extends TestCase
         $this->assertSame('🌿', $els[1]['icon']);
         $this->assertSame(['Line one', 'Line two'], $els[1]['bullets']);
         $this->assertSame('A → B', $els[1]['caption']);
+    }
+
+    #[Test]
+    public function maps_empty_image_src_to_ai_generate_pending(): void
+    {
+        $out = self::enrich([
+            'type' => 'slide',
+            'title' => 'Lift',
+            'content' => [
+                'type' => 'slide',
+                'canvas' => [
+                    'title' => 'Lift',
+                    'elements' => [
+                        [
+                            'type' => 'image',
+                            'id' => 'im1',
+                            'x' => 40,
+                            'y' => 100,
+                            'width' => 400,
+                            'height' => 300,
+                            'src' => '',
+                            'alt' => 'Diagram of lift on a wing',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $els = $out['content']['canvas']['elements'];
+        $this->assertCount(1, $els);
+        $this->assertSame('image', $els[0]['type']);
+        $this->assertSame('ai_generate:pending', $els[0]['src']);
+        $this->assertSame('Diagram of lift on a wing', $els[0]['alt']);
     }
 
     #[Test]

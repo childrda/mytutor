@@ -2,8 +2,12 @@
 
 namespace App\Services\MediaGeneration;
 
+use App\Services\Ai\LlmExchangeLogger;
 use App\Support\ApiJson;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use Throwable;
 
 /**
@@ -54,47 +58,132 @@ final class OpenAiImageGenerator
         $timeout = (float) config('tutor.image_generation.timeout', 120);
         $url = $baseUrl.'/images/generations';
 
-        try {
-            $response = Http::withToken($apiKey)
-                ->acceptJson()
-                ->timeout($timeout)
-                ->connectTimeout(min(30.0, $timeout))
-                ->post($url, [
-                    'model' => $model,
-                    'prompt' => $prompt,
-                    'n' => 1,
-                    'size' => $size,
-                    'response_format' => 'b64_json',
-                ]);
-        } catch (Throwable $e) {
-            throw new ImageGenerationException(
-                'Image provider request failed: '.$e->getMessage(),
-                ApiJson::UPSTREAM_ERROR,
-                502,
+        $postBody = [
+            'model' => $model,
+            'prompt' => $prompt,
+            'n' => 1,
+            'size' => $size,
+            'response_format' => 'b64_json',
+        ];
+
+        $logger = app(LlmExchangeLogger::class);
+        $ctx = LlmExchangeLogger::mergeContext([]);
+        $maxAttempts = max(1, min(5, (int) config('tutor.image_generation.http_max_attempts', 2)));
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $logCid = (string) Str::ulid();
+            $logger->record(
+                'sent',
+                $logCid,
+                $ctx['user_id'],
+                'image_generation',
+                $postBody,
+                '/v1/images/generations',
+                null,
+                $maxAttempts > 1 ? ['attempt' => $attempt, 'maxAttempts' => $maxAttempts] : [],
+                'image',
             );
-        }
 
-        if ($response->status() === 401) {
-            throw new ImageGenerationException('Invalid or missing API key', ApiJson::MISSING_API_KEY, 401);
-        }
+            try {
+                $response = Http::asJson()
+                    ->withToken($apiKey)
+                    ->acceptJson()
+                    ->timeout($timeout)
+                    ->connectTimeout(min(30.0, $timeout))
+                    ->post($url, $postBody);
+            } catch (Throwable $e) {
+                $logger->record(
+                    'received',
+                    $logCid,
+                    $ctx['user_id'],
+                    'image_generation',
+                    [
+                        'error' => $e->getMessage(),
+                        'exception' => $e::class,
+                    ],
+                    '/v1/images/generations',
+                    null,
+                    array_merge(
+                        ['transport_error' => true],
+                        $maxAttempts > 1 ? ['attempt' => $attempt, 'maxAttempts' => $maxAttempts] : [],
+                    ),
+                    'image',
+                );
+                if ($attempt < $maxAttempts && self::isRetryableTransportError($e)) {
+                    usleep((int) (400_000 * $attempt));
 
-        if (! $response->successful()) {
-            $decoded = $response->json();
-            if (! is_array($decoded)) {
+                    continue;
+                }
                 throw new ImageGenerationException(
-                    'Image provider returned an invalid response',
+                    'Image provider request failed: '.$e->getMessage(),
                     ApiJson::UPSTREAM_ERROR,
                     502,
                 );
             }
-            $this->throwFromErrorBody($response->status(), $decoded);
+
+            $rawBody = $response->body();
+            $json = $response->json();
+            $json = is_array($json) ? $json : [];
+            $receivedPayload = $json !== []
+                ? self::redactImageResponseForLog($json)
+                : self::diagnosticsForNonJsonImageResponse($response, $rawBody);
+            $logger->record(
+                'received',
+                $logCid,
+                $ctx['user_id'],
+                'image_generation',
+                $receivedPayload,
+                '/v1/images/generations',
+                $response->status(),
+                $maxAttempts > 1 ? ['attempt' => $attempt, 'maxAttempts' => $maxAttempts] : [],
+                'image',
+            );
+
+            if ($response->status() === 401) {
+                throw new ImageGenerationException('Invalid or missing API key', ApiJson::MISSING_API_KEY, 401);
+            }
+
+            if ($response->successful()) {
+                return $this->decodeSuccessfulImageResponse($json);
+            }
+
+            if ($attempt < $maxAttempts && self::isRetryableHttpStatus($response->status())) {
+                usleep((int) (400_000 * $attempt));
+
+                continue;
+            }
+
+            if ($json === []) {
+                throw new ImageGenerationException(
+                    self::describeUnusableImageResponseBody($response, $rawBody),
+                    ApiJson::UPSTREAM_ERROR,
+                    502,
+                );
+            }
+            $this->throwFromErrorBody($response->status(), $json);
         }
 
-        $json = $response->json();
+        throw new ImageGenerationException(
+            'Image provider request failed after retries',
+            ApiJson::UPSTREAM_ERROR,
+            502,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $json
+     * @return array{binary: string, mime: string, revisedPrompt: ?string}
+     *
+     * @throws ImageGenerationException
+     */
+    private function decodeSuccessfulImageResponse(array $json): array
+    {
         $b64 = data_get($json, 'data.0.b64_json');
         if (! is_string($b64) || $b64 === '') {
+            $keys = array_keys($json);
+            $hint = $keys === [] ? 'empty JSON object' : 'keys: '.implode(', ', array_slice($keys, 0, 8));
             throw new ImageGenerationException(
-                'Image provider returned no image data',
+                'Image provider returned no b64_json image data (expected data[0].b64_json). Got '.$hint.'.',
                 ApiJson::GENERATION_FAILED,
                 502,
             );
@@ -117,6 +206,82 @@ final class OpenAiImageGenerator
             'mime' => 'image/png',
             'revisedPrompt' => $revisedPrompt,
         ];
+    }
+
+    private static function isRetryableHttpStatus(int $status): bool
+    {
+        return in_array($status, [408, 429, 502, 503, 504], true);
+    }
+
+    private static function isRetryableTransportError(Throwable $e): bool
+    {
+        return $e instanceof ConnectionException;
+    }
+
+    /**
+     * @param  array<string, mixed>  $json
+     * @return array<string, mixed>
+     */
+    /**
+     * When the upstream is not OpenAI-shaped JSON (wrong URL, Imagen/Vertex, HTML error page, empty body).
+     *
+     * @return array<string, mixed>
+     */
+    private static function diagnosticsForNonJsonImageResponse(
+        Response $response,
+        string $rawBody,
+    ): array {
+        return [
+            '_parse_note' => 'Body was empty or not a JSON object; OpenAI Images returns { data: [{ b64_json }] }.',
+            '_http_status' => $response->status(),
+            '_response_ok' => $response->successful(),
+            '_content_type' => (string) $response->header('Content-Type'),
+            '_raw_body_length' => strlen($rawBody),
+            '_raw_body_preview' => mb_substr($rawBody, 0, 4000),
+        ];
+    }
+
+    /**
+     * Human-readable hint for UI / logs when the upstream body is not OpenAI-shaped JSON.
+     */
+    private static function describeUnusableImageResponseBody(Response $response, string $rawBody): string
+    {
+        $status = $response->status();
+        $ct = (string) $response->header('Content-Type');
+        $len = strlen($rawBody);
+        $preview = trim(mb_substr(preg_replace('/\s+/u', ' ', $rawBody), 0, 280));
+
+        $parts = [
+            'Image provider returned a non-JSON or empty response body',
+            "(HTTP {$status}".($ct !== '' ? ", Content-Type: {$ct}" : '').", {$len} bytes).",
+        ];
+        if ($preview !== '') {
+            $parts[] = 'Body preview: '.$preview;
+        } else {
+            $parts[] = 'Body was empty — often a network block, proxy, wrong base URL, or TLS interception.';
+        }
+        $parts[] = 'Confirm TUTOR_IMAGE_BASE_URL is https://api.openai.com/v1, config is not stale (php artisan config:clear), and the server can reach api.openai.com.';
+
+        return implode(' ', $parts);
+    }
+
+    private static function redactImageResponseForLog(array $json): array
+    {
+        if (! isset($json['data']) || ! is_array($json['data'])) {
+            return $json;
+        }
+        $out = $json;
+        foreach ($json['data'] as $i => $row) {
+            if (! is_array($row) || ! isset($row['b64_json']) || ! is_string($row['b64_json'])) {
+                continue;
+            }
+            $b64 = $row['b64_json'];
+            $len = strlen($b64);
+            $out['data'][$i]['b64_json'] = '<<redacted: '.$len.' base64 chars>>';
+            $out['data'][$i]['_decoded_bytes_approx'] = (int) floor($len * 0.75);
+        }
+
+        return $out;
     }
 
     private function assertValidSizeForModel(string $model, string $size): void

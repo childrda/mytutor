@@ -2,6 +2,7 @@
 
 namespace App\Services\Integrations;
 
+use App\Services\Ai\LlmClient;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
@@ -12,7 +13,7 @@ final class IntegrationProbes
 {
     /**
      * Validates Bearer credentials against an OpenAI-compatible base URL without calling paid image endpoints.
-     * Tries GET /v1/models first, then POST /v1/chat/completions with max_tokens: 1.
+     * Tries GET /v1/models first, then POST /v1/chat/completions with a 1-token completion limit.
      *
      * @return array{ok: true, probe: string}|array{ok: false, status?: int, error?: string, body?: string}
      */
@@ -47,11 +48,10 @@ final class IntegrationProbes
                 ->acceptJson()
                 ->timeout($timeout)
                 ->connectTimeout(min(10.0, $timeout))
-                ->post($baseUrl.'/chat/completions', [
+                ->post($baseUrl.'/chat/completions', array_merge([
                     'model' => $model,
                     'messages' => [['role' => 'user', 'content' => 'ping']],
-                    'max_tokens' => 1,
-                ]);
+                ], LlmClient::completionLimitPayload(1)));
 
             if ($chat->successful()) {
                 return ['ok' => true, 'probe' => 'POST /v1/chat/completions'];

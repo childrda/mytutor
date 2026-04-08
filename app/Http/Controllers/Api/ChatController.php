@@ -110,6 +110,10 @@ class ChatController extends Controller
                     flush();
                 },
                 $directorBaseline,
+                [
+                    'user_id' => auth()->id(),
+                    'source' => 'tutor_chat_stream',
+                ],
             );
         }, 200, [
             'Content-Type' => 'text/event-stream',

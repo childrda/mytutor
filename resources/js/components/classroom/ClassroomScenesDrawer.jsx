@@ -31,7 +31,7 @@ function SceneThumb({ scene }) {
                     transformOrigin: 'top left',
                 }}
             >
-                <SlideCanvasLayers canvas={c} readOnly />
+                <SlideCanvasLayers canvas={c} readOnly enableImageLightbox={false} />
             </div>
         </div>
     );

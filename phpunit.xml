@@ -35,5 +35,11 @@
         <env name="NIGHTWATCH_ENABLED" value="false"/>
         <!-- Avoid streaming outline in tests (extra HTTP + fragile fakes). -->
         <env name="TUTOR_LESSON_GEN_STREAM_OUTLINE" value="false" force="true"/>
+        <env name="TUTOR_LOG_LLM" value="false" force="true"/>
+        <!-- Unit tests expect direct Wikimedia URLs; mirroring would require HTTP fakes per test. -->
+        <env name="TUTOR_MIRROR_WIKIMEDIA_FALLBACK" value="false" force="true"/>
+        <!-- Do not inherit dev .env TUTOR_SLIDE_VISUAL_FALLBACK=false — SlideVisualFallback tests need fallback on. -->
+        <env name="TUTOR_SLIDE_VISUAL_FALLBACK" value="true" force="true"/>
+        <env name="TUTOR_SLIDE_FALLBACK_WIKIMEDIA" value="true" force="true"/>
     </php>
 </phpunit>

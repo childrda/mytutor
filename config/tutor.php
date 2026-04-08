@@ -3,6 +3,11 @@
 /**
  * Tutor application integration settings (API keys never exposed to clients).
  */
+$llmCompletionLimitRaw = env('TUTOR_LLM_COMPLETION_LIMIT_PARAM');
+$llmCompletionLimitParam = ($llmCompletionLimitRaw === null || trim((string) $llmCompletionLimitRaw) === '')
+    ? 'max_completion_tokens'
+    : (strtolower(trim((string) $llmCompletionLimitRaw)) === 'max_tokens' ? 'max_tokens' : 'max_completion_tokens');
+
 return [
     'app_version' => env('TUTOR_APP_VERSION', '1.0.0'),
 
@@ -77,6 +82,26 @@ return [
     ],
 
     /*
+    | When true, persist LLM request/response rows to llm_exchange_logs (TUTOR_LOG_LLM in .env).
+    | Lives at tutor.log_llm (not under lesson_generation) so every LLM caller uses the same switch.
+    */
+    'log_llm' => filter_var(env('TUTOR_LOG_LLM', 'false'), FILTER_VALIDATE_BOOL),
+    'log_llm_max_payload_bytes' => max(10_000, (int) env('TUTOR_LOG_LLM_MAX_PAYLOAD_BYTES', 2_000_000)),
+    /*
+    | When set, persist image API exchanges to llm_exchange_logs (endpoint /v1/images/generations).
+    | When unset, follows TUTOR_LOG_LLM. Never stores base64 image bytes — only redacted summaries.
+    */
+    'log_image_generation' => env('TUTOR_LOG_IMAGE_GENERATION') !== null
+        ? filter_var(env('TUTOR_LOG_IMAGE_GENERATION'), FILTER_VALIDATE_BOOL)
+        : filter_var(env('TUTOR_LOG_LLM', 'false'), FILTER_VALIDATE_BOOL),
+
+    /*
+    | POST /chat/completions token ceiling. When TUTOR_LLM_COMPLETION_LIMIT_PARAM is unset, we use
+    | max_completion_tokens (OpenAI’s current API for GPT-5+ etc.). Set to max_tokens for Ollama/LM Studio.
+    */
+    'llm_completion_limit_param' => $llmCompletionLimitParam,
+
+    /*
     |--------------------------------------------------------------------------
     | Lesson generation pipeline (Phase 7.3): sequential LLM calls in one job
     | Empty *model envs fall back to default_chat.model
@@ -110,7 +135,23 @@ return [
         'content_use_pdf_page_images' => filter_var(env('TUTOR_LESSON_GEN_CONTENT_VISION', 'true'), FILTER_VALIDATE_BOOL),
         'max_pdf_page_images' => max(0, min(4, (int) env('TUTOR_LESSON_GEN_MAX_PDF_IMAGES', 4))),
         'max_pdf_image_data_url_chars' => max(10_000, (int) env('TUTOR_LESSON_GEN_MAX_PDF_IMAGE_CHARS', 700_000)),
+        /*
+        | When false, SlideVisualFallback does nothing (no curated Commons diagrams, no Wikipedia
+        | image search). Use with “Image generation” on so slides rely on AI-resolved gen_img only.
+        */
+        'slide_visual_fallback' => filter_var(env('TUTOR_SLIDE_VISUAL_FALLBACK', 'true'), FILTER_VALIDATE_BOOL),
+        /*
+        | When slide_visual_fallback is true: if no keyword diagram matches, optionally query
+        | en.wikipedia.org for a Commons thumbnail. Set false to skip that HTTP call only.
+        */
         'slide_visual_fallback_wikimedia' => filter_var(env('TUTOR_SLIDE_FALLBACK_WIKIMEDIA', 'true'), FILTER_VALIDATE_BOOL),
+        /*
+        | When true, download curated upload.wikimedia.org fallback diagrams server-side and store
+        | under the public disk so the UI loads /storage/... instead of hotlinking (avoids browser
+        | privacy tools / referrer blocks that show Network “failed” for cross-origin images).
+        */
+        'mirror_wikimedia_fallback_images' => filter_var(env('TUTOR_MIRROR_WIKIMEDIA_FALLBACK', 'true'), FILTER_VALIDATE_BOOL),
+        'ai_slide_images_max' => max(1, min(32, (int) env('TUTOR_LESSON_GEN_AI_SLIDE_IMAGES_MAX', 12))),
     ],
 
     /*
@@ -192,12 +233,28 @@ return [
     |--------------------------------------------------------------------------
     */
     'image_generation' => [
-        'base_url' => rtrim((string) env('TUTOR_IMAGE_BASE_URL', env('TUTOR_DEFAULT_LLM_BASE_URL', 'https://api.openai.com/v1')), '/'),
-        'api_key' => env('TUTOR_IMAGE_API_KEY') ?: env('TUTOR_DEFAULT_LLM_API_KEY') ?: env('OPENAI_API_KEY'),
+        'base_url' => rtrim((string) env(
+            'TUTOR_IMAGE_BASE_URL',
+            env(
+                'TUTOR_NANO_BANANA_IMAGE_BASE_URL',
+                env('TUTOR_DEFAULT_LLM_BASE_URL', 'https://api.openai.com/v1'),
+            ),
+        ), '/'),
+        'api_key' => env('TUTOR_IMAGE_API_KEY')
+            ?: env('TUTOR_IMAGE_AI_KEY')
+            ?: env('IMAGE_NANO_BANANA_API_KEY')
+            ?: env('tutor_image_api_key')
+            ?: env('tutor_image_ai_key')
+            ?: env('TUTOR_DEFAULT_LLM_API_KEY')
+            ?: env('OPENAI_API_KEY'),
         'model' => env('TUTOR_OPENAI_IMAGE_MODEL', 'dall-e-3'),
-        'default_size' => env('TUTOR_IMAGE_DEFAULT_SIZE', '1024x1024'),
+        'default_size' => env('TUTOR_IMAGE_DEFAULT_SIZE', '1792x1024'),
         'max_prompt_chars' => max(100, min(16_000, (int) env('TUTOR_IMAGE_MAX_PROMPT_CHARS', 4000))),
         'timeout' => max(15.0, (float) env('TUTOR_IMAGE_REQUEST_TIMEOUT', 120)),
+        /*
+        | Transient HTTP failures (429, 502, 503, 504) and connection errors: total attempts per image.
+        */
+        'http_max_attempts' => max(1, min(5, (int) env('TUTOR_IMAGE_HTTP_MAX_ATTEMPTS', 2))),
     ],
 
     /*

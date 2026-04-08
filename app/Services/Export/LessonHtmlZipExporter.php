@@ -158,6 +158,43 @@ final class LessonHtmlZipExporter
         return preg_match('#^https://[^\s\'"<>]+$#i', $src) === 1;
     }
 
+    private static function isPendingSlideImageSrc(string $src): bool
+    {
+        $src = trim($src);
+        if ($src === '') {
+            return false;
+        }
+        if (preg_match('/^pdf_page:\d+$/i', $src) === 1) {
+            return true;
+        }
+        if (preg_match('/^gen_img_\d+$/i', $src) === 1) {
+            return true;
+        }
+        if (preg_match('/^ai_generate:/i', $src) === 1) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $el
+     */
+    private static function renderSlideImagePlaceholderHtml(array $el): string
+    {
+        $src = isset($el['src']) && is_string($el['src']) ? trim($el['src']) : '';
+        $label = htmlspecialchars($src, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $alt = isset($el['alt']) && is_string($el['alt']) ? trim($el['alt']) : '';
+        $altBlock = $alt !== ''
+            ? '<p class="slide-img-placeholder-alt">'.htmlspecialchars(mb_substr($alt, 0, 400), ENT_QUOTES | ENT_HTML5, 'UTF-8').'</p>'
+            : '';
+        $hint = 'Image placeholder — not a final graphic. Re-export after generation completes, or use a real https or data URL in the editor.';
+
+        return '<div class="slide-img-placeholder"><p class="slide-img-placeholder-label"><code>'.$label.'</code></p>'
+            .$altBlock
+            .'<p class="slide-img-placeholder-hint">'.htmlspecialchars($hint, ENT_QUOTES | ENT_HTML5, 'UTF-8').'</p></div>';
+    }
+
     private static function renderSlideCardHtml(array $el): string
     {
         $accent = strtolower(trim((string) ($el['accent'] ?? 'indigo')));
@@ -230,11 +267,19 @@ final class LessonHtmlZipExporter
 
                         continue;
                     }
-                    if ($elt === 'image' && isset($el['src']) && is_string($el['src']) && self::isSafeSlideImageSrc($el['src'])) {
-                        $alt = isset($el['alt']) && is_string($el['alt']) ? trim($el['alt']) : '';
-                        $altEsc = htmlspecialchars(mb_substr($alt, 0, 500), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                        $srcEsc = htmlspecialchars($el['src'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                        $parts[] = '<p class="slide-img-wrap"><img class="slide-img" src="'.$srcEsc.'" alt="'.$altEsc.'" loading="lazy" decoding="async"/></p>';
+                    if ($elt === 'image' && isset($el['src']) && is_string($el['src'])) {
+                        $srcRaw = trim($el['src']);
+                        if ($srcRaw === '') {
+                            continue;
+                        }
+                        if (self::isSafeSlideImageSrc($srcRaw)) {
+                            $alt = isset($el['alt']) && is_string($el['alt']) ? trim($el['alt']) : '';
+                            $altEsc = htmlspecialchars(mb_substr($alt, 0, 500), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            $srcEsc = htmlspecialchars($srcRaw, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                            $parts[] = '<p class="slide-img-wrap"><img class="slide-img" src="'.$srcEsc.'" alt="'.$altEsc.'" loading="lazy" decoding="async"/></p>';
+                        } elseif (self::isPendingSlideImageSrc($srcRaw)) {
+                            $parts[] = self::renderSlideImagePlaceholderHtml($el);
+                        }
                     }
                 }
             }
@@ -298,6 +343,11 @@ final class LessonHtmlZipExporter
 .slide-card .scard-icon{font-size:1.35rem;line-height:1;}
 .slide-img-wrap{margin:0.65rem 0;}
 .slide-img{max-width:100%;height:auto;border-radius:0.5rem;border:1px solid #e2e8f0;}
+.slide-img-placeholder{margin:0.65rem 0;padding:0.75rem 1rem;border-radius:0.5rem;border:1px dashed #cbd5e1;background:#f8fafc;font-size:0.88rem;color:#475569;}
+.slide-img-placeholder-label{margin:0 0 0.35rem;}
+.slide-img-placeholder-label code{font-size:0.85rem;}
+.slide-img-placeholder-alt{margin:0.35rem 0 0;font-size:0.82rem;line-height:1.4;color:#334155;}
+.slide-img-placeholder-hint{margin:0.5rem 0 0;font-size:0.78rem;color:#64748b;}
 .json-fallback{overflow:auto;font-size:0.8rem;background:#f1f5f9;padding:0.75rem;border-radius:0.5rem;}
 .quiz{margin:0;padding-left:1.25rem;}
 .foot{margin-top:2rem;font-size:0.8rem;color:#94a3b8;}

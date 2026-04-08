@@ -38,6 +38,25 @@ function truncate(s, max) {
     return `${s.slice(0, max - 1)}…`;
 }
 
+function formatImageIssueLine(issue) {
+    if (!issue || typeof issue !== 'object') {
+        return '';
+    }
+    const msg = typeof issue.message === 'string' ? issue.message : '';
+    if (!msg) {
+        return '';
+    }
+    const bits = [];
+    if (typeof issue.slideTitle === 'string' && issue.slideTitle.trim()) {
+        bits.push(`Slide: ${issue.slideTitle.trim()}`);
+    }
+    if (typeof issue.placeholderId === 'string' && issue.placeholderId.trim()) {
+        bits.push(`Placeholder: ${issue.placeholderId.trim()}`);
+    }
+    const prefix = bits.length ? `${bits.join(' · ')} — ` : '';
+    return `${prefix}${msg}`;
+}
+
 function CentralVisual({ phase, status }) {
     const [mockIdx, setMockIdx] = useState(0);
 
@@ -284,6 +303,9 @@ export default function GenerationPreviewExperience({ phase, status, pipelineSte
 
     const outline = partialResult?.outline;
     const scenes = partialResult?.scenes;
+    const imageIssues = Array.isArray(partialResult?.imageGenerationIssues) ? partialResult.imageGenerationIssues : [];
+    const imageErrors = imageIssues.filter((i) => i?.severity !== 'warning');
+    const imageWarnings = imageIssues.filter((i) => i?.severity === 'warning');
 
     return (
         <div className="rounded-2xl border border-zinc-200/80 bg-white/95 p-6 shadow-xl shadow-zinc-200/40 backdrop-blur-sm dark:border-zinc-700/80 dark:bg-zinc-900/95 dark:shadow-black/40">
@@ -319,6 +341,35 @@ export default function GenerationPreviewExperience({ phase, status, pipelineSte
             <div className="mt-6">
                 <CentralVisual phase={phase} status={status} />
             </div>
+
+            {imageErrors.length > 0 ? (
+                <div
+                    className="mt-6 rounded-xl border border-red-200/90 bg-red-50/90 px-4 py-3 dark:border-red-900/60 dark:bg-red-950/35"
+                    role="alert"
+                >
+                    <p className="text-sm font-semibold text-red-900 dark:text-red-100">Some slide images did not generate</p>
+                    <p className="mt-1 text-xs text-red-800/90 dark:text-red-200/85">
+                        The lesson is still saved, but one or more images failed. Check the reasons below, then fix placeholders in the
+                        studio or adjust your prompt.
+                    </p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-red-900 dark:text-red-100">
+                        {imageErrors.map((issue, idx) => (
+                            <li key={idx}>{formatImageIssueLine(issue)}</li>
+                        ))}
+                    </ul>
+                </div>
+            ) : null}
+
+            {imageWarnings.length > 0 ? (
+                <div className="mt-6 rounded-xl border border-amber-200/90 bg-amber-50/90 px-4 py-3 dark:border-amber-900/50 dark:bg-amber-950/30">
+                    <p className="text-sm font-semibold text-amber-950 dark:text-amber-100">Heads up: slide images need attention</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-950/95 dark:text-amber-100/95">
+                        {imageWarnings.map((issue, idx) => (
+                            <li key={idx}>{formatImageIssueLine(issue)}</li>
+                        ))}
+                    </ul>
+                </div>
+            ) : null}
 
             <OutlineDoc outline={outline} streaming={partialResult?.outlineStreaming === true} />
 

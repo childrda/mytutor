@@ -42,7 +42,10 @@ class ProjectTutorChatController extends Controller
         }
 
         try {
-            $reply = LlmClient::chat($baseUrl, $apiKey, $model, $mapped, 0.5, 2048);
+            $reply = LlmClient::chat($baseUrl, $apiKey, $model, $mapped, 0.5, 2048, [
+                'user_id' => $request->user()?->getKey(),
+                'source' => 'project_tutor_chat',
+            ]);
 
             return ApiJson::success(['message' => ['role' => 'assistant', 'content' => $reply]]);
         } catch (Throwable $e) {

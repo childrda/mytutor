@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Ai\LlmClient;
 use App\Services\Integrations\IntegrationCatalog;
 use App\Services\Integrations\IntegrationProbes;
 use App\Support\ApiJson;
@@ -27,11 +28,10 @@ class VerifyIntegrationController extends Controller
             $res = Http::withToken($apiKey, 'Bearer')
                 ->acceptJson()
                 ->timeout(30)
-                ->post($baseUrl.'/chat/completions', [
+                ->post($baseUrl.'/chat/completions', array_merge([
                     'model' => $model,
                     'messages' => [['role' => 'user', 'content' => 'ping']],
-                    'max_tokens' => 1,
-                ]);
+                ], LlmClient::completionLimitPayload(1)));
 
             if (! $res->successful()) {
                 return ApiJson::success(['ok' => false, 'status' => $res->status(), 'body' => $res->body()]);
@@ -60,13 +60,13 @@ class VerifyIntegrationController extends Controller
                 return ApiJson::success([
                     'ok' => false,
                     'skipped' => true,
-                    'message' => 'IMAGE_*_API_KEY values appear in /api/integrations, but this probe runs only when TUTOR_IMAGE_API_KEY, TUTOR_DEFAULT_LLM_API_KEY, or OPENAI_API_KEY is set with an OpenAI-compatible base URL.',
+                    'message' => 'IMAGE_*_API_KEY values appear in /api/integrations, but this probe runs only when TUTOR_IMAGE_API_KEY, IMAGE_NANO_BANANA_API_KEY, TUTOR_DEFAULT_LLM_API_KEY, or OPENAI_API_KEY is set with an OpenAI-compatible base URL.',
                 ]);
             }
 
             return ApiJson::success([
                 'ok' => false,
-                'message' => 'Set TUTOR_IMAGE_API_KEY and TUTOR_IMAGE_BASE_URL (or default LLM keys) to probe server-side image credentials.',
+                'message' => 'Set TUTOR_IMAGE_API_KEY and TUTOR_IMAGE_BASE_URL, or IMAGE_NANO_BANANA_API_KEY with TUTOR_IMAGE_BASE_URL / TUTOR_NANO_BANANA_IMAGE_BASE_URL (or default LLM keys), to probe server-side image credentials.',
             ]);
         }
 
