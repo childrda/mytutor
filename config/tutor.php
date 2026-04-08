@@ -113,6 +113,13 @@ return [
         'content_model' => env('TUTOR_LESSON_GEN_CONTENT_MODEL'),
         'roles_max_tokens' => max(256, (int) env('TUTOR_LESSON_GEN_ROLES_MAX_TOKENS', 2048)),
         'outline_max_tokens' => max(512, (int) env('TUTOR_LESSON_GEN_OUTLINE_MAX_TOKENS', 4096)),
+        /*
+        | Outline scene count: enforced in prompts plus up to two regeneration attempts if the
+        | model returns too few items. Completion token budget scales with outline_max_scenes so
+        | long outlines are not cut off mid-JSON (you can still raise TUTOR_LESSON_GEN_OUTLINE_MAX_TOKENS).
+        */
+        'outline_min_scenes' => max(1, (int) env('TUTOR_LESSON_GEN_OUTLINE_MIN_SCENES', 1)),
+        'outline_max_scenes' => max(1, (int) env('TUTOR_LESSON_GEN_OUTLINE_MAX_SCENES', 20)),
         'content_max_tokens' => max(1024, (int) env('TUTOR_LESSON_GEN_CONTENT_MAX_TOKENS', 8192)),
         /*
         | When true (default), each outline scene gets its own LLM completion with
@@ -132,6 +139,7 @@ return [
         'actions_scene_max_concurrent' => max(1, min(12, (int) env('TUTOR_LESSON_GEN_ACTIONS_CONCURRENT', 4))),
         'placeholder_narration_actions' => filter_var(env('TUTOR_LESSON_GEN_PLACEHOLDER_ACTIONS', 'true'), FILTER_VALIDATE_BOOL),
         'stream_outline' => filter_var(env('TUTOR_LESSON_GEN_STREAM_OUTLINE', 'true'), FILTER_VALIDATE_BOOL),
+        // When outline_min_scenes > 1, the pipeline forces non-streaming outline regardless of stream_outline.
         'content_use_pdf_page_images' => filter_var(env('TUTOR_LESSON_GEN_CONTENT_VISION', 'true'), FILTER_VALIDATE_BOOL),
         'max_pdf_page_images' => max(0, min(4, (int) env('TUTOR_LESSON_GEN_MAX_PDF_IMAGES', 4))),
         'max_pdf_image_data_url_chars' => max(10_000, (int) env('TUTOR_LESSON_GEN_MAX_PDF_IMAGE_CHARS', 700_000)),

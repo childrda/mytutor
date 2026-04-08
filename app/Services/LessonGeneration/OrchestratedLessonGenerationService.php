@@ -131,14 +131,29 @@ final class OrchestratedLessonGenerationService
             ]);
 
             $personasSummary = $this->summarizePersonas($rolesPayload);
-            $systemOutline = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with key: '
-                .'outline (array of 3-8 items). Each item: id (string, unique), type ("slide"|"quiz"), title (string), order (int starting 0), '
-                .'objective (string, learning goal for that scene), notes (string, optional teacher notes). '
-                .'Order must be contiguous. Use language: '.$language.'.';
+            $systemOutline = $this->buildOutlineSystemPrompt($language);
 
-            $userOutline = $userBase."\n\nClassroom personas (names/roles):\n".$personasSummary;
+            $userOutline = $userBase."\n\nClassroom personas (names/roles):\n".$personasSummary
+                .$this->buildOutlineLengthUserSuffix();
 
             $outline = $this->generateOutline($job, $baseUrl, $apiKey, $systemOutline, $userOutline, 0.35, $requirement, $lessonName);
+            $outline = $this->ensureOutlineMeetsMinSceneCount(
+                $outline,
+                $baseUrl,
+                $apiKey,
+                $systemOutline,
+                $userOutline,
+                0.35,
+                $requirement,
+                $lessonName,
+            );
+            $outline = $this->extendOutlineToConfiguredMinimum(
+                $outline,
+                $baseUrl,
+                $apiKey,
+                $requirement,
+                $lessonName,
+            );
 
             $job->update([
                 'progress' => 38,
@@ -387,7 +402,14 @@ final class OrchestratedLessonGenerationService
         string $requirement,
         string $lessonName,
     ): array {
-        if (! config('tutor.lesson_generation.stream_outline', true)) {
+        $streamEnabled = filter_var(config('tutor.lesson_generation.stream_outline', true), FILTER_VALIDATE_BOOL);
+        // Streaming + token limits often yield a short prefix of the outline array (e.g. 6–8 objects). When a floor
+        // scene count is configured, use one non-streaming completion so the model returns a full JSON array.
+        if ($this->outlineSceneBounds()['min'] > 1) {
+            $streamEnabled = false;
+        }
+
+        if (! $streamEnabled) {
             $decoded = $this->chatJson($baseUrl, $apiKey, 'outline', $systemOutline, $userOutline, $temperature);
 
             return $this->finishOutlineFromLlmJson($decoded, $requirement, $lessonName);
@@ -1715,9 +1737,10 @@ final class OrchestratedLessonGenerationService
         string $system,
         string $user,
         float $temperature,
+        ?int $maxCompletionTokens = null,
     ): array {
         $model = $this->modelFor($step);
-        $max = $this->maxTokensFor($step);
+        $max = $maxCompletionTokens ?? $this->maxTokensFor($step);
 
         try {
             $raw = LlmClient::chat($baseUrl, $apiKey, $model, [
@@ -1760,11 +1783,251 @@ final class OrchestratedLessonGenerationService
     {
         return match ($step) {
             'roles' => (int) config('tutor.lesson_generation.roles_max_tokens', 2048),
-            'outline' => (int) config('tutor.lesson_generation.outline_max_tokens', 4096),
+            'outline' => $this->outlineMaxCompletionTokens(),
             'content' => (int) config('tutor.lesson_generation.content_max_tokens', 8192),
             'actions' => (int) config('tutor.lesson_generation.actions_max_tokens_per_scene', 3072),
             default => 4096,
         };
+    }
+
+    /**
+     * Large outlines need more completion tokens; streaming otherwise stops mid-array (few scenes parsed).
+     */
+    private function outlineMaxCompletionTokens(): int
+    {
+        $configured = max(512, (int) config('tutor.lesson_generation.outline_max_tokens', 4096));
+        $sceneCap = max(1, (int) config('tutor.lesson_generation.outline_max_scenes', 20));
+        $fromScenes = 900 + $sceneCap * 220;
+
+        return max($configured, min(32768, $fromScenes));
+    }
+
+    /**
+     * @return array{min: int, max: int}
+     */
+    private function outlineSceneBounds(): array
+    {
+        $maxRaw = (int) config('tutor.lesson_generation.outline_max_scenes', 20);
+        $minRaw = (int) config('tutor.lesson_generation.outline_min_scenes', 1);
+        $max = max(1, $maxRaw);
+        $min = max(1, $minRaw);
+        if ($min > $max) {
+            $min = $max;
+        }
+
+        return ['min' => $min, 'max' => $max];
+    }
+
+    private function buildOutlineSystemPrompt(string $language): string
+    {
+        ['min' => $min, 'max' => $max] = $this->outlineSceneBounds();
+        $range = $min === $max
+            ? (string) $max
+            : $min.'–'.$max;
+
+        return 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with key: '
+            .'outline (array). HARD RULE: the array length MUST be between '.$min.' and '.$max.' items inclusive. '
+            .'Fewer than '.$min.' or more than '.$max.' is invalid. '
+            .'Each item is one scene (slide or quiz) with its own title and learning objective—split the lesson across enough scenes to satisfy the minimum; avoid repeating the same objective on multiple items. '
+            .'If the user requirement caps length (e.g. "max 25 slides"), stay at or under that cap but never below '.$min.' unless they explicitly request fewer than '.$min.' scenes. '
+            .'If they ask for more than '.$max.' scenes, cap at '.$max.'. '
+            .'Each item: id (string, unique), type ("slide"|"quiz"), title (string), order (int starting 0), '
+            .'objective (string, learning goal for that scene), notes (string, optional teacher notes). '
+            .'Order must be contiguous. Use language: '.$language.'.';
+    }
+
+    private function buildOutlineLengthUserSuffix(): string
+    {
+        ['min' => $min, 'max' => $max] = $this->outlineSceneBounds();
+
+        return "\n\nOUTLINE LENGTH (required): produce between {$min} and {$max} outline items (inclusive). "
+            .'If your instructions above mention a maximum (e.g. max 25 slides), treat that as an upper bound within '.$min.'–'.$max.'.';
+    }
+
+    /**
+     * Models often return too few scenes; prompts alone are unreliable. Regenerate once or twice with an explicit fix.
+     *
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     */
+    private function ensureOutlineMeetsMinSceneCount(
+        array $outline,
+        string $baseUrl,
+        string $apiKey,
+        string $systemOutline,
+        string $userOutline,
+        float $temperature,
+        string $requirement,
+        string $lessonName,
+    ): array {
+        ['min' => $min, 'max' => $max] = $this->outlineSceneBounds();
+        if ($min <= 1) {
+            return $outline;
+        }
+
+        $current = $outline;
+        for ($attempt = 0; $attempt < 2 && count($current) < $min; $attempt++) {
+            $n = count($current);
+            $boost = $this->outlineMaxCompletionTokens();
+            $retryTokens = min(32768, (int) round($boost * (1.6 + ($attempt * 0.35))));
+            $retryUser = $userOutline."\n\n"
+                .'REGENERATION REQUIRED: Your outline had only '.$n.' item(s). '
+                ."Return a NEW complete JSON object with key \"outline\" containing at least {$min} and at most {$max} items. "
+                .'Each item: id, type ("slide" or "quiz"), title, order (0 through n-1), objective, optional notes. '
+                .'Subdivide the lesson into more scenes with distinct objectives until you reach at least '.$min.' items.';
+
+            try {
+                $decoded = $this->chatJson($baseUrl, $apiKey, 'outline', $systemOutline, $retryUser, max($temperature, 0.42), $retryTokens);
+                $next = $this->finishOutlineFromLlmJson($decoded, $requirement, $lessonName);
+            } catch (Throwable $e) {
+                Log::warning('lesson_generation.outline_min_retry_failed', [
+                    'attempt' => $attempt,
+                    'had_count' => $n,
+                    'min' => $min,
+                    'message' => $e->getMessage(),
+                ]);
+                break;
+            }
+
+            if (count($next) >= $min) {
+                return $next;
+            }
+            $current = $next;
+        }
+
+        if (count($current) < $min) {
+            Log::warning('lesson_generation.outline_below_configured_min', [
+                'count' => count($current),
+                'min' => $min,
+                'max' => $max,
+            ]);
+        }
+
+        return $current;
+    }
+
+    /**
+     * Last resort when regenerate calls still return too few items: ask only for additional scenes and merge.
+     *
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     */
+    private function extendOutlineToConfiguredMinimum(
+        array $outline,
+        string $baseUrl,
+        string $apiKey,
+        string $requirement,
+        string $lessonName,
+    ): array {
+        ['min' => $min, 'max' => $max] = $this->outlineSceneBounds();
+        if ($min <= 1) {
+            return $outline;
+        }
+
+        $current = $outline;
+        for ($round = 0; $round < 4 && count($current) < $min; $round++) {
+            $before = count($current);
+            $current = $this->appendOutlineItemsViaLlm($current, $baseUrl, $apiKey, $requirement, $lessonName);
+            if (count($current) <= $before) {
+                break;
+            }
+        }
+
+        if (count($current) < $min) {
+            Log::warning('lesson_generation.outline_extend_failed', [
+                'count' => count($current),
+                'min' => $min,
+                'max' => $max,
+            ]);
+        }
+
+        return $current;
+    }
+
+    /**
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $existing
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     */
+    private function appendOutlineItemsViaLlm(
+        array $existing,
+        string $baseUrl,
+        string $apiKey,
+        string $requirement,
+        string $lessonName,
+    ): array {
+        ['min' => $min, 'max' => $max] = $this->outlineSceneBounds();
+        $n = count($existing);
+        if ($n >= $min || $n >= $max) {
+            return $existing;
+        }
+
+        $need = min($min - $n, $max - $n);
+        if ($need < 1) {
+            return $existing;
+        }
+
+        $lines = [];
+        foreach ($existing as $i => $row) {
+            $t = isset($row['title']) && is_string($row['title']) ? trim($row['title']) : 'Scene';
+            $lines[] = ($i + 1).'. '.$t;
+        }
+        $block = implode("\n", $lines);
+
+        $system = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with key: '
+            .'outline (array). The array must contain ONLY NEW scenes to add after the existing plan—do not repeat '
+            .'the same titles or restate existing objectives. '
+            .'Each item: id (string, unique), type ("slide"|"quiz"), title, order (int, only for ordering within this new batch, starting 0), '
+            .'objective (string), notes (optional string). '
+            .'You MUST return at least '.$need.' items in outline and at most '.$need.' items (exactly '.$need.').';
+
+        $ctx = mb_substr(trim($lessonName."\n\n".$requirement), 0, 6000);
+        $user = "Already planned scenes (titles):\n{$block}\n\nLesson / requirement:\n{$ctx}\n\n"
+            ."Add exactly {$need} additional outline items that continue the lesson (later topics, practice, review, or a quiz)—not duplicates of the list above.";
+
+        $tokens = min(32768, (int) round($this->outlineMaxCompletionTokens() * 1.25));
+
+        try {
+            $decoded = $this->chatJson($baseUrl, $apiKey, 'outline', $system, $user, 0.38, $tokens);
+        } catch (Throwable $e) {
+            Log::warning('lesson_generation.outline_append_failed', [
+                'message' => $e->getMessage(),
+                'need' => $need,
+            ]);
+
+            return $existing;
+        }
+
+        $rows = is_array($decoded['outline'] ?? null) ? $decoded['outline'] : [];
+        $add = $this->normalizeOutline($rows);
+        $room = max(0, $max - count($existing));
+        $take = min($need, $room, count($add));
+        $add = $take > 0 ? array_slice($add, 0, $take) : [];
+
+        return $this->mergeAppendedOutlineItems($existing, $add, $max);
+    }
+
+    /**
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $base
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $additional
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     */
+    private function mergeAppendedOutlineItems(array $base, array $additional, int $maxScenes): array
+    {
+        $merged = $base;
+        foreach ($additional as $row) {
+            if (count($merged) >= $maxScenes) {
+                break;
+            }
+            $merged[] = $row;
+        }
+
+        $out = [];
+        foreach (array_values($merged) as $i => $row) {
+            $row['order'] = $i;
+            $out[] = $row;
+        }
+
+        return $out;
     }
 
     /**
@@ -1797,8 +2060,9 @@ final class OrchestratedLessonGenerationService
             ];
         }
         usort($out, fn ($a, $b) => $a['order'] <=> $b['order']);
-        if (count($out) > 8) {
-            $out = array_slice($out, 0, 8);
+        $maxScenes = $this->outlineSceneBounds()['max'];
+        if (count($out) > $maxScenes) {
+            $out = array_slice($out, 0, $maxScenes);
         }
         $reindexed = [];
         foreach (array_values($out) as $idx => $item) {
