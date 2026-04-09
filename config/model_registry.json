@@ -1,0 +1,369 @@
+{
+  "schema_version": 1,
+  "_meta": {
+    "phase": 1,
+    "note": "Data-only registry for future ModelRegistry resolver. Not loaded by application code yet. Registry keys under llm/tts/asr/pdf/image/video/web_search align with IntegrationCatalog public ids (config/tutor.php) where applicable. Additional image keys (dall-e-3, gpt-image-1) match TUTOR_OPENAI_IMAGE_MODEL-style defaults."
+  },
+  "llm": {
+    "openai": {
+      "provider": "openai",
+      "endpoint": "{base_url}/chat/completions",
+      "request_format": {
+        "model": "{model|gpt-4o-mini}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_completion_tokens": "{max_completion_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "_note": "Use max_tokens instead of max_completion_tokens for Ollama/LM Studio (see tutor.llm_completion_limit_param)."
+    },
+    "anthropic": {
+      "provider": "anthropic",
+      "endpoint": "{base_url|https://api.anthropic.com/v1}/messages",
+      "request_format": {
+        "model": "{model|claude-sonnet-4-20250514}",
+        "max_tokens": "{max_tokens|4096}",
+        "messages": "{messages}"
+      },
+      "response_path": "content[0].text",
+      "auth_header": "x-api-key",
+      "auth_scheme": "{api_key}",
+      "_note": "Messages schema differs from OpenAI; resolver Phase 7 must transform or pass pre-shaped messages."
+    },
+    "google": {
+      "provider": "google",
+      "endpoint": "{base_url}/v1beta/models/{model|gemini-2.0-flash}:generateContent",
+      "request_format": {
+        "contents": "{messages}",
+        "generationConfig": {
+          "temperature": "{temperature|0.7}",
+          "maxOutputTokens": "{max_output_tokens|2048}"
+        }
+      },
+      "response_path": "candidates[0].content.parts[0].text",
+      "auth_header": "X-Goog-Api-Key",
+      "auth_scheme": "{api_key}",
+      "_note": "Typical Gemini base is https://generativelanguage.googleapis.com — adjust model path segment per deployment."
+    },
+    "deepseek": {
+      "provider": "deepseek",
+      "endpoint": "{base_url|https://api.deepseek.com/v1}/chat/completions",
+      "request_format": {
+        "model": "{model|deepseek-chat}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_tokens": "{max_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "qwen": {
+      "provider": "qwen",
+      "endpoint": "{base_url}/chat/completions",
+      "request_format": {
+        "model": "{model}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_tokens": "{max_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "_note": "Set QWEN_BASE_URL + QWEN_API_KEY (OpenAI-compatible gateway)."
+    },
+    "kimi": {
+      "provider": "kimi",
+      "endpoint": "{base_url}/chat/completions",
+      "request_format": {
+        "model": "{model}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_tokens": "{max_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "minimax": {
+      "provider": "minimax",
+      "endpoint": "{base_url}/chat/completions",
+      "request_format": {
+        "model": "{model}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_tokens": "{max_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "glm": {
+      "provider": "glm",
+      "endpoint": "{base_url}/chat/completions",
+      "request_format": {
+        "model": "{model}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_tokens": "{max_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "siliconflow": {
+      "provider": "siliconflow",
+      "endpoint": "{base_url}/chat/completions",
+      "request_format": {
+        "model": "{model}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_tokens": "{max_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "doubao": {
+      "provider": "doubao",
+      "endpoint": "{base_url}/chat/completions",
+      "request_format": {
+        "model": "{model}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_tokens": "{max_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "grok": {
+      "provider": "grok",
+      "endpoint": "{base_url|https://api.x.ai/v1}/chat/completions",
+      "request_format": {
+        "model": "{model}",
+        "messages": "{messages}",
+        "temperature": "{temperature|0.7}",
+        "max_tokens": "{max_tokens|2048}"
+      },
+      "response_path": "choices[0].message.content",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    }
+  },
+  "image": {
+    "dall-e-3": {
+      "provider": "openai",
+      "endpoint": "{base_url}/images/generations",
+      "request_format": {
+        "model": "{model|dall-e-3}",
+        "prompt": "{prompt}",
+        "n": 1,
+        "size": "{size|1024x1024}"
+      },
+      "response_path": "data[0].url",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "_note": "Response may use data[0].b64_json instead of url; client should support both (see OpenAiImageGenerator)."
+    },
+    "dall-e-2": {
+      "provider": "openai",
+      "endpoint": "{base_url}/images/generations",
+      "request_format": {
+        "model": "{model|dall-e-2}",
+        "prompt": "{prompt}",
+        "n": 1,
+        "size": "{size|512x512}"
+      },
+      "response_path": "data[0].url",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "gpt-image-1": {
+      "provider": "openai",
+      "endpoint": "{base_url}/images/generations",
+      "request_format": {
+        "model": "{model|gpt-image-1}",
+        "prompt": "{prompt}",
+        "n": 1,
+        "size": "{size|1536x1024}"
+      },
+      "response_path": "data[0].url",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "_note": "GPT Image sizes differ from DALL·E 3; app maps legacy sizes in OpenAiImageGenerator until resolver owns aliases."
+    },
+    "nano-banana": {
+      "provider": "nano-banana",
+      "endpoint": "{base_url}/v1/images/generations",
+      "request_format": {
+        "model": "{model}",
+        "prompt": "{prompt}",
+        "n": 1,
+        "size": "{size|1024x1024}"
+      },
+      "response_path": "data[0].url",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "_note": "Placeholder OpenAI-shaped contract — confirm actual NANO_BANANA / vendor path when wiring IMAGE_NANO_BANANA_API_KEY."
+    },
+    "seedream": {
+      "provider": "seedream",
+      "_note": "Stub — set IMAGE_SEEDREAM endpoint and request_format when vendor contract is finalized."
+    },
+    "qwen-image": {
+      "provider": "qwen-image",
+      "_note": "Stub — set IMAGE_QWEN_IMAGE HTTP contract (often OpenAI-compatible); verify with vendor docs."
+    },
+    "minimax-image": {
+      "provider": "minimax-image",
+      "_note": "Stub — wire IMAGE_MINIMAX image generation endpoint."
+    },
+    "grok-image": {
+      "provider": "grok-image",
+      "_note": "Stub — wire IMAGE_GROK image endpoint."
+    }
+  },
+  "tts": {
+    "openai-tts": {
+      "provider": "openai",
+      "endpoint": "{base_url}/audio/speech",
+      "request_format": {
+        "model": "{model|tts-1}",
+        "input": "{text}",
+        "voice": "{voice|alloy}",
+        "response_format": "{response_format|mp3}"
+      },
+      "response_type": "binary",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "_note": "Optional speed field omitted from template; merge when kwargs include speed."
+    },
+    "openai-tts-hd": {
+      "provider": "openai",
+      "endpoint": "{base_url}/audio/speech",
+      "request_format": {
+        "model": "tts-1-hd",
+        "input": "{text}",
+        "voice": "{voice|alloy}",
+        "response_format": "{response_format|mp3}"
+      },
+      "response_type": "binary",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "azure-tts": {
+      "provider": "azure",
+      "_note": "Stub — Azure Speech endpoint and SSML/json differ from OpenAI; define in Phase 6 migration."
+    },
+    "glm-tts": {
+      "provider": "glm-tts",
+      "_note": "Stub — wire TTS_GLM vendor contract."
+    },
+    "qwen-tts": {
+      "provider": "qwen-tts",
+      "_note": "Stub — wire TTS_QWEN vendor contract."
+    },
+    "doubao-tts": {
+      "provider": "doubao-tts",
+      "_note": "Stub — wire TTS_DOUBAO vendor contract."
+    },
+    "elevenlabs-tts": {
+      "provider": "elevenlabs",
+      "endpoint": "{base_url|https://api.elevenlabs.io/v1}/text-to-speech/{voice_id}",
+      "request_format": {
+        "text": "{text}",
+        "model_id": "{model|eleven_multilingual_v2}"
+      },
+      "response_type": "binary",
+      "auth_header": "xi-api-key",
+      "auth_scheme": "{api_key}",
+      "_note": "voice_id in URL path; confirm model_id and voice list with ElevenLabs."
+    },
+    "minimax-tts": {
+      "provider": "minimax-tts",
+      "_note": "Stub — wire TTS_MINIMAX vendor contract."
+    }
+  },
+  "asr": {
+    "openai-whisper": {
+      "provider": "openai",
+      "endpoint": "{base_url}/audio/transcriptions",
+      "request_format": {
+        "model": "{model|whisper-1}",
+        "file": "{audio_file}",
+        "language": "{language|en}"
+      },
+      "request_encoding": "multipart",
+      "response_path": "text",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}"
+    },
+    "qwen-asr": {
+      "provider": "qwen-asr",
+      "_note": "Stub — wire ASR_QWEN multipart or JSON contract."
+    }
+  },
+  "pdf": {
+    "unpdf": {
+      "provider": "unpdf",
+      "_note": "Stub — PDF_UNPDF may be HTTP or local; lesson PDF parsing currently uses server-side tools (see tutor.pdf_parse)."
+    },
+    "mineru": {
+      "provider": "mineru",
+      "_note": "Stub — wire PDF_MINERU extraction endpoint when used."
+    }
+  },
+  "video": {
+    "seedance": {
+      "provider": "seedance",
+      "_note": "Stub — wire VIDEO_SEEDANCE async job API."
+    },
+    "kling": {
+      "provider": "kling",
+      "_note": "Stub — wire VIDEO_KLING API."
+    },
+    "veo": {
+      "provider": "veo",
+      "_note": "Stub — wire VIDEO_VEO API."
+    },
+    "sora": {
+      "provider": "sora",
+      "_note": "Stub — wire VIDEO_SORA API."
+    },
+    "minimax-video": {
+      "provider": "minimax",
+      "endpoint": "{base_url}/v1/video_generation",
+      "request_format": {
+        "model": "{model|MiniMax-Hailuo-2.3}",
+        "prompt": "{prompt}"
+      },
+      "response_path": "task_id",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "_note": "Illustrative only — actual MiniMax video flow is submit + poll + retrieve (see VideoGenerationService); consolidate in later phase."
+    },
+    "grok-video": {
+      "provider": "grok-video",
+      "_note": "Stub — wire VIDEO_GROK video API."
+    }
+  },
+  "web_search": {
+    "tavily": {
+      "provider": "tavily",
+      "endpoint": "https://api.tavily.com/search",
+      "request_format": {
+        "api_key": "{api_key}",
+        "query": "{query}",
+        "max_results": "{max_results|10}",
+        "search_depth": "{search_depth|basic}"
+      },
+      "response_path": "results",
+      "auth_header": null,
+      "auth_scheme": null,
+      "_note": "API key in JSON body; no Bearer header."
+    }
+  }
+}
