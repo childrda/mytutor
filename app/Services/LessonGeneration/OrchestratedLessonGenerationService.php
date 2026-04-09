@@ -689,9 +689,13 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * Renumber all gen_img_N placeholders across all scenes so IDs are
-     * globally unique (gen_img_1, gen_img_2, ...) and build a map of
-     * id => alt-text for the image generation step.
+     * Normalize placeholder image src values to canonical gen_img_1, gen_img_2, … in
+     * first-seen order, and build altMap for image generation.
+     *
+     * Multiple elements that reuse the same original placeholder string (e.g. two slides
+     * both use gen_img_1 for one diagram) map to the same canonical id, so altMap has one
+     * entry per distinct diagram and resolveGenImgPlaceholders runs one API call for it.
+     * Matching is case-insensitive on the original src.
      *
      * @param  list<array<string, mixed>>  $scenes
      * @return array{scenes: list<array<string, mixed>>, altMap: array<string, string>}
