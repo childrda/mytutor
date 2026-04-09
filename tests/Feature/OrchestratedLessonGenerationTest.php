@@ -19,6 +19,8 @@ class OrchestratedLessonGenerationTest extends TestCase
     {
         Config::set('tutor.default_chat.api_key', 'sk-test-fake');
         Config::set('tutor.lesson_generation.stream_outline', false);
+        Config::set('tutor.lesson_generation.outline_min_scenes', 1);
+        Config::set('tutor.lesson_generation.outline_max_scenes', 20);
         Config::set('tutor.lesson_generation.slide_visual_fallback_wikimedia', false);
         Config::set('tutor.lesson_generation.content_scene_max_concurrent', 1);
         Config::set('tutor.lesson_generation.actions_scene_max_concurrent', 1);

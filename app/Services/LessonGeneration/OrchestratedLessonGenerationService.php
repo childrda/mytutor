@@ -34,6 +34,9 @@ use Throwable;
  */
 final class OrchestratedLessonGenerationService
 {
+    /** @var list<string> */
+    private const LAYOUT_HINTS = ['image_card', 'three_cards', 'text_panels', 'image_stacked', 'text_bullets'];
+
     private const PLACEHOLDER_SPOTLIGHT_MAX = 3;
 
     private const PLACEHOLDER_SPOTLIGHT_MS = 3800;
@@ -178,7 +181,6 @@ final class OrchestratedLessonGenerationService
             $rolesJson = json_encode($rolesPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
             $personasSummary = $this->summarizePersonas($rolesPayload);
 
-            $layoutRules = $this->buildLayoutRules($pdfPageImages);
             $visionBlock = $this->buildVisionBlock($pdfPageImages);
 
             if (config('tutor.lesson_generation.content_per_scene', true)) {
@@ -191,11 +193,13 @@ final class OrchestratedLessonGenerationService
                     $personasSummary,
                     $language,
                     $pdfPageImages,
-                    $layoutRules,
                     $visionBlock,
                     0.4,
                 );
             } else {
+                $layoutRules = $pdfPageImages !== []
+                    ? $this->buildLayoutRules($pdfPageImages, [])
+                    : $this->buildBatchedNoPdfLayoutRulesPreamble($outline);
                 $systemContent = $this->buildBatchedContentSystemPrompt($language, $layoutRules, $visionBlock);
                 $userContent = $userBase."\n\nOUTLINE (follow ids, types, order exactly):\n".$outlineJson
                     ."\n\nCLASSROOM_ROLES:\n".$rolesJson;
@@ -554,8 +558,9 @@ final class OrchestratedLessonGenerationService
 
     /**
      * @param  list<string>  $pdfPageImages
+     * @param  array<string, mixed>  $spec  Outline row (uses type, layoutHint when no PDF)
      */
-    private function buildLayoutRules(array $pdfPageImages): string
+    private function buildLayoutRules(array $pdfPageImages, array $spec = []): string
     {
         if ($pdfPageImages !== []) {
             return 'LAYOUT WHEN PDF IMAGES ARE PRESENT (VISION INPUT above): For each type "slide" scene, default to a RICH layout—not text-only. '
@@ -567,28 +572,73 @@ final class OrchestratedLessonGenerationService
                 .'Do NOT default to three equal-width concept cards when a pdf_page image can illustrate the slide; reserve three-column cards for abstract comparisons or when images are a poor fit. ';
         }
 
-        return 'CRITICAL — When no PDF is attached: every slide image src MUST be "gen_img_1", "gen_img_2", … (globally increasing). '
-            .'Do NOT use "ai_generate:pending" or any https URL — those values are invalid and stripped by the app. '
-            ."\n\n"
-            .'NO PDF IMAGES — use AI-generated image placeholders. For EVERY type "slide" (not quiz): '
-            .'(1) Include exactly one type "image" element per slide. '
-            .'Set src to a placeholder ID: "gen_img_1" for the first image across all slides, '
-            .'"gen_img_2" for the second, etc. IDs must be globally unique across ALL scenes — '
-            .'do NOT restart numbering per scene. '
-            .'Set alt to a detailed English prompt describing the ideal educational diagram for that slide. '
-            .'The alt prompt is sent directly to the image API as-is — you control success: one clear diagram per slide, scientifically consistent labels, minimal clutter. '
-            .'RULE — one primary subject per image: prefer a single schematic vehicle, airfoil, cell, or cycle — NOT a collage of birds + paper planes + jets, or three unrelated objects side by side (that often fails safety and confuses the image model). '
-            .'RULE — force diagrams (lift/weight/thrust/drag): ONE airplane or foil in side view; state exactly four arrows with colors and directions, e.g. '
-            .'"lift up from wings in blue, weight down in red, thrust forward in green, drag backward in orange", plus "clear text labels" and background; '
-            .'do not ask for extra mascots, animals, or second aircraft unless the slide title explicitly demands comparison (then use two slides instead). '
-            .'Good flight example: "A simple bright educational infographic for high school students showing the four forces of flight around one airplane: '
-            .'lift arrows up from the wings in blue, weight down in red, thrust forward in green, drag backward in orange; clear labels, simple icons, sky-blue background." '
-            .'Water cycle example: "A bright labeled diagram for 5th graders showing evaporation, condensation, precipitation, and collection with arrows". '
-            .'(2) Include a type "card" titled exactly "Key ideas" with 3–5 bullets. '
-            .'(3) Default layout: LEFT large image (x=40, y=165, width=450, height=340), '
-            .'RIGHT "Key ideas" card (x=510, y=165, width=450, height=340). '
-            .'(4) NEVER use "ai_generate:pending", URLs, or any value other than gen_img_N as src. '
-            .'(5) NEVER produce a slide with only text elements. ';
+        if (($spec['type'] ?? '') === 'quiz') {
+            return 'This outline item is type "quiz" — produce quiz content only; slide layoutHint does not apply.';
+        }
+
+        $hint = isset($spec['layoutHint']) && is_string($spec['layoutHint']) ? $spec['layoutHint'] : 'image_card';
+        if (! in_array($hint, self::LAYOUT_HINTS, true)) {
+            $hint = 'image_card';
+        }
+
+        $imgRule = 'CRITICAL — When this layout uses an image: src MUST be "gen_img_N" placeholders (you may reuse the SAME gen_img_K string on multiple slides if the same diagram applies — the server deduplicates). '
+            .'Globally increase N when a NEW distinct image is needed. '
+            .'NEVER use "ai_generate:pending" or any https URL — those values are invalid and stripped. ';
+
+        return match ($hint) {
+            'three_cards' => 'LAYOUT three_cards — NO type "image" on this slide. '
+                .'Create THREE card elements side by side: x ≈ 32, 340, 648; y ≈ 165; width ≈ 295; height ≈ 340. '
+                .'Each card: distinct title, 2–4 bullets, different accent (sky|emerald|violet|indigo|amber|rose|slate), emoji icon. '
+                .'canvas.subtitle should name what is being compared. Stable ids (e.g. card_a, card_b, card_c).',
+
+            'text_panels' => 'LAYOUT text_panels — NO image. Use ONE large card (x=60, y=150, w=880, h=340) as the main panel with title + 3–5 bullets or a short definition paragraph in bullets; accent sky or emerald. '
+                .'Optional: one small type "text" callout (x=60, y=420) for a subtitle or quote. No gen_img placeholder.',
+
+            'text_bullets' => 'LAYOUT text_bullets — NO image. Full-width card panel (x=60, y=150, w=880, h=340) with title and 4–6 concrete bullets; accent amber|emerald|slate. '
+                .'Optional second small card bottom-right (x=700, y=400, w=260, h=120) titled "Key term" as a callout.',
+
+            'image_stacked' => $imgRule
+                .'LAYOUT image_stacked — LEFT large image (x=40, y=165, w=420, h=340), src gen_img_N, alt = detailed English diagram prompt (one clear subject). '
+                .'RIGHT: TWO stacked cards (x=480, y=165, w=490): first card height ≈160, second ≈160, gap ≈20. Each card: distinct title and 2–3 bullets. '
+                .'Stable ids: img_main, card_top, card_bottom.',
+
+            default => // image_card
+                $imgRule
+                .'LAYOUT image_card — LEFT large image (x=40, y=165, w=450, h=340), src gen_img_N, alt = detailed English diagram prompt (one primary subject, explicit label colors for force diagrams). '
+                .'RIGHT "Key ideas" card (x=510, y=165, w=450, h=340) with 3–5 concrete bullets. '
+                .'RULE — avoid busy collages; one schematic subject per image. Stable ids: img_main, card_keyideas.',
+        };
+    }
+
+    /**
+     * Batched content generation (no PDF): inject per-outline-id layout instructions.
+     *
+     * @param  list<array<string, mixed>>  $outline
+     */
+    private function buildBatchedNoPdfLayoutRulesPreamble(array $outline): string
+    {
+        $blocks = [
+            'NO PDF — each slide scene MUST follow the layout rules for its outline id below (from layoutHint). '
+                .'Quiz scenes: standard quiz JSON only. '
+                .'Reuse the same gen_img_K placeholder string when two slides share one diagram (deduplicated server-side). '
+                .'Across the lesson, at most ~40% of slides should use image_card or image_stacked; vary with three_cards, text_panels, text_bullets.',
+        ];
+        foreach ($outline as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $id = isset($row['id']) && is_string($row['id']) ? $row['id'] : '?';
+            $type = ($row['type'] ?? '') === 'quiz' ? 'quiz' : 'slide';
+            if ($type === 'quiz') {
+                $blocks[] = '### Outline id '.$id.' (quiz) — multiple-choice quiz UI only.';
+
+                continue;
+            }
+            $hint = isset($row['layoutHint']) && is_string($row['layoutHint']) ? $row['layoutHint'] : 'image_card';
+            $blocks[] = '### Outline id '.$id.' (layoutHint: '.$hint.")\n".$this->buildLayoutRules([], $row);
+        }
+
+        return implode("\n\n", $blocks);
     }
 
     private function buildBatchedContentSystemPrompt(string $language, string $layoutRules, string $visionBlock): string
@@ -601,7 +651,7 @@ final class OrchestratedLessonGenerationService
             ."\n\n## ELEMENT SCHEMAS\n"
             .'For type "slide": {type:"slide", canvas:{title, subtitle (short tagline), footer (optional reflection prompt), width:1000, height:562.5, elements:[]}}. '
             .'NEVER put the main title in an element — it goes in canvas.title only. '
-            .'NEVER produce a slide with only text elements — every slide must have at least one image or card. '
+            .'For each slide: follow VISUAL DESIGN RULES (some layouts are card-only, no image). Never emit an empty elements array. '
             .'card: {type:"card", id, x, y, width, height, title, bullets:["3-5 concrete bullet strings"], caption, accent:"sky"|"emerald"|"violet"|"indigo"|"amber"|"rose"|"slate", icon:"emoji"}. '
             .'image: {type:"image", id, x, y, width, height, src, alt}. '
             .'src MUST be one of: (a) "pdf_page:N" if a PDF was uploaded, '
@@ -624,7 +674,7 @@ final class OrchestratedLessonGenerationService
             .'scene: { type ("slide"|"quiz"), title (string), optional notes (string), content: slide or quiz body }. '
             .'For slide scenes, content = {type:"slide", canvas:{title, subtitle, footer (optional), width:1000, height:562.5, elements:[...]}}. '
             .'canvas.title is the on-slide heading; NEVER put the main title only in a text element. '
-            .'NEVER produce a slide with only text elements — include at least one image or card with several bullets. '
+            .'Follow VISUAL DESIGN RULES for whether an image is required (card-only layouts have no image). Never emit an empty elements array. '
             .'Expand the outline objective and notes into concrete bullets, labels, and diagram choices—do not output a single short sentence for the whole slide. '
             .'card: {type:"card", id, x, y, width, height, title, bullets (3–5 strings), caption, accent, icon}. '
             .'image: {type:"image", id, x, y, width, height, src, alt}. '
@@ -650,6 +700,8 @@ final class OrchestratedLessonGenerationService
     {
         $counter = 1;
         $altMap = [];
+        /** @var array<string, string> $seenMap maps original placeholder src -> canonical gen_img_N */
+        $seenMap = [];
 
         foreach ($scenes as &$scene) {
             if (($scene['type'] ?? '') !== 'slide') {
@@ -676,7 +728,14 @@ final class OrchestratedLessonGenerationService
                 if (! preg_match('/^gen_img_\d+$/i', $src) && ! preg_match('/^ai_generate:/i', $src)) {
                     continue;
                 }
+                $key = strtolower($src);
+                if (isset($seenMap[$key])) {
+                    $el['src'] = $seenMap[$key];
+
+                    continue;
+                }
                 $newId = 'gen_img_'.$counter;
+                $seenMap[$key] = $newId;
                 $el['src'] = $newId;
                 $altMap[$newId] = trim((string) ($el['alt'] ?? '')) ?: 'Educational diagram for slide';
                 $counter++;
@@ -919,7 +978,7 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
+     * @param  list<array<string, mixed>>  $outline
      * @param  list<string>  $pdfPageImages
      * @return list<array<string, mixed>>
      */
@@ -932,7 +991,6 @@ final class OrchestratedLessonGenerationService
         string $personasSummary,
         string $language,
         array $pdfPageImages,
-        string $layoutRules,
         string $visionBlock,
         float $temperature,
     ): array {
@@ -940,8 +998,6 @@ final class OrchestratedLessonGenerationService
         if ($total === 0) {
             return [];
         }
-
-        $system = $this->buildSingleSceneSystemPrompt($language, $layoutRules, $visionBlock);
         $model = $this->modelFor('content');
         $maxPer = max(1024, (int) config('tutor.lesson_generation.content_max_tokens_per_scene', 6144));
         $concurrent = max(1, min(12, (int) config('tutor.lesson_generation.content_scene_max_concurrent', 4)));
@@ -955,6 +1011,8 @@ final class OrchestratedLessonGenerationService
             for ($k = 0; $k < $concurrent && ($offset + $k) < $total; $k++) {
                 $idx = $offset + $k;
                 $spec = $outline[$idx];
+                $sceneLayoutRules = $this->buildLayoutRules($pdfPageImages, is_array($spec) ? $spec : []);
+                $system = $this->buildSingleSceneSystemPrompt($language, $sceneLayoutRules, $visionBlock);
                 $userText = $this->buildSingleSceneUserText($userBase, $personasSummary, $outline, $idx, $total, $spec);
                 $key = 's'.$idx;
 
@@ -1824,6 +1882,7 @@ final class OrchestratedLessonGenerationService
         $range = $min === $max
             ? (string) $max
             : $min.'–'.$max;
+        $hints = implode('|', self::LAYOUT_HINTS);
 
         return 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with key: '
             .'outline (array). HARD RULE: the array length MUST be between '.$min.' and '.$max.' items inclusive. '
@@ -1833,7 +1892,31 @@ final class OrchestratedLessonGenerationService
             .'If they ask for more than '.$max.' scenes, cap at '.$max.'. '
             .'Each item: id (string, unique), type ("slide"|"quiz"), title (string), order (int starting 0), '
             .'objective (string, learning goal for that scene), notes (string, optional teacher notes). '
-            .'Order must be contiguous. Use language: '.$language.'.';
+            .'For type "slide" ONLY, also layoutHint (string — exactly one of: '.$hints.'). Omit layoutHint for type "quiz". '
+            .'Order must be contiguous. Use language: '.$language.'. '
+
+            ."\n\n## layoutHint (required on every slide item)\n"
+            .'Choose the layout that fits THIS scene. Do NOT use image_card for every slide. Vary by content. '
+
+            ."\n\n"
+            .'"image_card" — diagram genuinely helps: processes, systems, cycles, structures. Costs an image API call — use sparingly. '
+
+            ."\n\n"
+            .'"three_cards" — exactly three parallel items (stages, types, definitions). No image — cards are the visual. '
+
+            ."\n\n"
+            .'"text_panels" — transition, agenda, summary, single key definition, or quote. Large card panel, no image. '
+
+            ."\n\n"
+            .'"image_stacked" — one strong diagram plus 2–3 sub-topics each with its own card (stacked). '
+
+            ."\n\n"
+            .'"text_bullets" — facts, rules, steps, vocabulary with no natural visual. Card with bullets, no image. '
+
+            ."\n\n"
+            .'BUDGET: across the full lesson, at most ~40% of slides should be image_card or image_stacked. '
+            .'Example for 6 slides: ~2 image-style, ~2 three_cards, ~1 text_panels, ~1 text_bullets. '
+            .'Never make every slide image_card.';
     }
 
     private function buildOutlineLengthUserSuffix(): string
@@ -1870,10 +1953,12 @@ final class OrchestratedLessonGenerationService
             $n = count($current);
             $boost = $this->outlineMaxCompletionTokens();
             $retryTokens = min(32768, (int) round($boost * (1.6 + ($attempt * 0.35))));
+            $hints = implode('|', self::LAYOUT_HINTS);
             $retryUser = $userOutline."\n\n"
                 .'REGENERATION REQUIRED: Your outline had only '.$n.' item(s). '
                 ."Return a NEW complete JSON object with key \"outline\" containing at least {$min} and at most {$max} items. "
-                .'Each item: id, type ("slide" or "quiz"), title, order (0 through n-1), objective, optional notes. '
+                .'Each item: id, type ("slide" or "quiz"), title, order (0 through n-1), objective, optional notes; '
+                .'for every type "slide" include layoutHint (one of: '.$hints.'). '
                 .'Subdivide the lesson into more scenes with distinct objectives until you reach at least '.$min.' items.';
 
             try {
@@ -1973,11 +2058,12 @@ final class OrchestratedLessonGenerationService
         }
         $block = implode("\n", $lines);
 
+        $hints = implode('|', self::LAYOUT_HINTS);
         $system = 'You are a curriculum designer. Output a single JSON object only, no markdown fences, with key: '
             .'outline (array). The array must contain ONLY NEW scenes to add after the existing plan—do not repeat '
             .'the same titles or restate existing objectives. '
             .'Each item: id (string, unique), type ("slide"|"quiz"), title, order (int, only for ordering within this new batch, starting 0), '
-            .'objective (string), notes (optional string). '
+            .'objective (string), notes (optional string); for type "slide" include layoutHint (one of: '.$hints.'). '
             .'You MUST return at least '.$need.' items in outline and at most '.$need.' items (exactly '.$need.').';
 
         $ctx = mb_substr(trim($lessonName."\n\n".$requirement), 0, 6000);
@@ -2032,7 +2118,7 @@ final class OrchestratedLessonGenerationService
 
     /**
      * @param  list<array<string, mixed>>  $rows
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function normalizeOutline(array $rows): array
     {
@@ -2050,7 +2136,9 @@ final class OrchestratedLessonGenerationService
             $order = isset($row['order']) && is_numeric($row['order']) ? (int) $row['order'] : $i;
             $objective = isset($row['objective']) && is_string($row['objective']) ? trim($row['objective']) : '';
             $notes = isset($row['notes']) && is_string($row['notes']) ? trim($row['notes']) : '';
-            $out[] = [
+            $hintRaw = isset($row['layoutHint']) && is_string($row['layoutHint']) ? trim($row['layoutHint']) : '';
+            $layoutHint = in_array($hintRaw, self::LAYOUT_HINTS, true) ? $hintRaw : 'image_card';
+            $item = [
                 'id' => $id,
                 'type' => $type,
                 'title' => $title,
@@ -2058,6 +2146,10 @@ final class OrchestratedLessonGenerationService
                 'objective' => $objective,
                 'notes' => $notes,
             ];
+            if ($type === 'slide') {
+                $item['layoutHint'] = $layoutHint;
+            }
+            $out[] = $item;
         }
         usort($out, fn ($a, $b) => $a['order'] <=> $b['order']);
         $maxScenes = $this->outlineSceneBounds()['max'];
@@ -2074,7 +2166,7 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function defaultOutline(string $requirement, string $lessonName): array
     {
@@ -2088,6 +2180,7 @@ final class OrchestratedLessonGenerationService
                 'order' => 0,
                 'objective' => 'Frame the topic and goals.',
                 'notes' => $snippet,
+                'layoutHint' => 'text_panels',
             ],
             [
                 'id' => (string) Str::ulid(),
@@ -2096,6 +2189,7 @@ final class OrchestratedLessonGenerationService
                 'order' => 1,
                 'objective' => 'Teach the main ideas with examples.',
                 'notes' => '',
+                'layoutHint' => 'image_card',
             ],
             [
                 'id' => (string) Str::ulid(),
