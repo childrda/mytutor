@@ -23,6 +23,9 @@ final class OpenAiImageGenerator
 
     private const array DALLE2_SIZES = ['256x256', '512x512', '1024x1024'];
 
+    /** GPT Image (`gpt-image-*`) — not interchangeable with DALL·E 3 pixel sizes. */
+    private const array GPT_IMAGE_FAMILY_SIZES = ['1024x1024', '1024x1536', '1536x1024', 'auto'];
+
     /**
      * @return array{binary: string, mime: string, revisedPrompt: ?string}
      *
@@ -57,6 +60,7 @@ final class OpenAiImageGenerator
         $baseUrl = rtrim((string) config('tutor.image_generation.base_url'), '/');
         $model = $model !== null && $model !== '' ? $model : (string) config('tutor.image_generation.model', 'dall-e-3');
         $size = $size !== null && $size !== '' ? $size : (string) config('tutor.image_generation.default_size', '1024x1024');
+        $size = self::resolveImageSizeForModel($model, $size);
         $this->assertValidSizeForModel($model, $size);
 
         $timeout = (float) config('tutor.image_generation.timeout', 120);
@@ -343,19 +347,87 @@ final class OpenAiImageGenerator
         return $out;
     }
 
+    /**
+     * Map legacy DALL·E defaults onto GPT Image–supported sizes when using gpt-image-* models.
+     */
+    private static function resolveImageSizeForModel(string $model, string $size): string
+    {
+        if (! self::isGptImageFamilyModel($model)) {
+            return trim($size);
+        }
+
+        $s = strtolower(trim($size));
+        foreach (self::GPT_IMAGE_FAMILY_SIZES as $allowed) {
+            if (strtolower((string) $allowed) === $s) {
+                return (string) $allowed;
+            }
+        }
+
+        return match ($s) {
+            '1792x1024' => '1536x1024',
+            '1024x1792' => '1024x1536',
+            '256x256', '512x512' => '1024x1024',
+            default => trim($size),
+        };
+    }
+
+    private static function isGptImageFamilyModel(string $model): bool
+    {
+        $m = strtolower(trim($model));
+
+        return str_starts_with($m, 'gpt-image');
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function allowedSizesForModel(string $model): array
+    {
+        $m = strtolower(trim($model));
+        if (str_starts_with($m, 'dall-e-2')) {
+            return self::DALLE2_SIZES;
+        }
+        if (str_starts_with($m, 'dall-e-3') || $m === 'dall-e-3') {
+            return self::DALLE3_SIZES;
+        }
+        if (self::isGptImageFamilyModel($model)) {
+            return self::GPT_IMAGE_FAMILY_SIZES;
+        }
+
+        return self::DALLE3_SIZES;
+    }
+
     private function assertValidSizeForModel(string $model, string $size): void
     {
-        $allowed = str_starts_with($model, 'dall-e-2') || $model === 'dall-e-2'
-            ? self::DALLE2_SIZES
-            : self::DALLE3_SIZES;
-
-        if (! in_array($size, $allowed, true)) {
-            throw new ImageGenerationException(
-                'Invalid size for model '.$model.'. Allowed: '.implode(', ', $allowed),
-                ApiJson::INVALID_REQUEST,
-                400,
-            );
+        $allowed = self::allowedSizesForModel($model);
+        if (self::isGptImageFamilyModel($model)) {
+            if (self::sizeMatchesAllowedList($size, $allowed)) {
+                return;
+            }
+        } elseif (in_array($size, $allowed, true)) {
+            return;
         }
+
+        throw new ImageGenerationException(
+            'Invalid size for model '.$model.'. Allowed: '.implode(', ', $allowed),
+            ApiJson::INVALID_REQUEST,
+            400,
+        );
+    }
+
+    /**
+     * @param  list<string>  $allowed
+     */
+    private static function sizeMatchesAllowedList(string $size, array $allowed): bool
+    {
+        $s = strtolower(trim($size));
+        foreach ($allowed as $a) {
+            if (strtolower((string) $a) === $s) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

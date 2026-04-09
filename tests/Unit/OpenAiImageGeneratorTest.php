@@ -83,6 +83,41 @@ class OpenAiImageGeneratorTest extends TestCase
     }
 
     #[Test]
+    public function gpt_image_maps_dalle_landscape_size_to_1536x1024(): void
+    {
+        config([
+            'tutor.image_generation.api_key' => 'sk-test',
+            'tutor.image_generation.base_url' => 'https://api.openai.com/v1',
+            'tutor.image_generation.model' => 'gpt-image-1',
+            'tutor.image_generation.default_size' => '1792x1024',
+        ]);
+
+        Http::fake([
+            'https://api.openai.com/v1/images/generations' => Http::response([
+                'data' => [
+                    ['b64_json' => base64_encode('x')],
+                ],
+            ], 200),
+        ]);
+
+        app(OpenAiImageGenerator::class)->generate('A diagram');
+
+        Http::assertSent(function (Request $request) {
+            if (! str_contains($request->url(), 'images/generations')) {
+                return false;
+            }
+            $body = $request->data();
+
+            return $body === [
+                'model' => 'gpt-image-1',
+                'prompt' => 'A diagram',
+                'n' => 1,
+                'size' => '1536x1024',
+            ];
+        });
+    }
+
+    #[Test]
     public function decodes_image_from_url_when_b64_json_absent(): void
     {
         config([
