@@ -43,7 +43,7 @@ class OpenAiImageGeneratorTest extends TestCase
     }
 
     #[Test]
-    public function dall_e_model_sends_response_format_b64_json(): void
+    public function dall_e_model_also_omits_response_format_for_gateway_compatibility(): void
     {
         config([
             'tutor.image_generation.api_key' => 'sk-test',
@@ -68,7 +68,7 @@ class OpenAiImageGeneratorTest extends TestCase
             }
             $body = $request->data();
 
-            return ($body['response_format'] ?? null) === 'b64_json';
+            return ! array_key_exists('response_format', $body);
         });
     }
 

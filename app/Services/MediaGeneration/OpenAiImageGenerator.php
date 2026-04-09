@@ -58,16 +58,14 @@ final class OpenAiImageGenerator
         $timeout = (float) config('tutor.image_generation.timeout', 120);
         $url = $baseUrl.'/images/generations';
 
+        // Do not send response_format: GPT Image models reject it; some OpenAI-compatible gateways reject it even for
+        // dall-e-* model names. Official DALL·E defaults to URL; we download in decodeSuccessfulImageResponse().
         $postBody = [
             'model' => $model,
             'prompt' => $prompt,
             'n' => 1,
             'size' => $size,
         ];
-        // DALL·E 2/3 accept response_format; GPT Image and some gateways reject it and return base64 (or URL) by default.
-        if (self::modelAcceptsImagesResponseFormatParameter($model)) {
-            $postBody['response_format'] = 'b64_json';
-        }
 
         $logger = app(LlmExchangeLogger::class);
         $ctx = LlmExchangeLogger::mergeContext([]);
@@ -251,16 +249,6 @@ final class OpenAiImageGenerator
             ApiJson::GENERATION_FAILED,
             502,
         );
-    }
-
-    /**
-     * OpenAI DALL·E 2/3 document response_format=url|b64_json. GPT Image models reject this parameter.
-     */
-    private static function modelAcceptsImagesResponseFormatParameter(string $model): bool
-    {
-        $m = strtolower(trim($model));
-
-        return str_starts_with($m, 'dall-e-');
     }
 
     private static function isRetryableHttpStatus(int $status): bool
