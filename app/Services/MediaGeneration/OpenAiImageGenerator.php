@@ -12,6 +12,10 @@ use Throwable;
 
 /**
  * OpenAI-compatible POST /v1/images/generations (Phase 4.2).
+ *
+ * Request JSON is intentionally only model, prompt, n, size (no response_format). Queue workers and
+ * Octane keep PHP in memory — after deploying changes here run `php artisan queue:restart` (or
+ * `php artisan horizon:terminate` for Horizon) so image jobs pick up the new code.
  */
 final class OpenAiImageGenerator
 {
@@ -57,15 +61,7 @@ final class OpenAiImageGenerator
 
         $timeout = (float) config('tutor.image_generation.timeout', 120);
         $url = $baseUrl.'/images/generations';
-
-        // Do not send response_format: GPT Image models reject it; some OpenAI-compatible gateways reject it even for
-        // dall-e-* model names. Official DALL·E defaults to URL; we download in decodeSuccessfulImageResponse().
-        $postBody = [
-            'model' => $model,
-            'prompt' => $prompt,
-            'n' => 1,
-            'size' => $size,
-        ];
+        $postBody = self::imagesGenerationsPayload($model, $prompt, $size);
 
         $logger = app(LlmExchangeLogger::class);
         $ctx = LlmExchangeLogger::mergeContext([]);
@@ -249,6 +245,21 @@ final class OpenAiImageGenerator
             ApiJson::GENERATION_FAILED,
             502,
         );
+    }
+
+    /**
+     * Strict request body: do not add keys (e.g. response_format) that strict gateways reject.
+     *
+     * @return array{model: string, prompt: string, n: int, size: string}
+     */
+    private static function imagesGenerationsPayload(string $model, string $prompt, string $size): array
+    {
+        return [
+            'model' => $model,
+            'prompt' => $prompt,
+            'n' => 1,
+            'size' => $size,
+        ];
     }
 
     private static function isRetryableHttpStatus(int $status): bool

@@ -239,6 +239,8 @@ return [
     |--------------------------------------------------------------------------
     | Image generation (Phase 4.2): OpenAI-compatible /v1/images/generations
     |--------------------------------------------------------------------------
+    | After changing image code or image .env vars: `php artisan config:clear` (and config:cache if you
+    | use it). Restart queue workers (`php artisan queue:restart` or Horizon terminate) so jobs use it.
     */
     'image_generation' => [
         'base_url' => rtrim((string) env(

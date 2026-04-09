@@ -306,6 +306,9 @@ export default function GenerationPreviewExperience({ phase, status, pipelineSte
     const imageIssues = Array.isArray(partialResult?.imageGenerationIssues) ? partialResult.imageGenerationIssues : [];
     const imageErrors = imageIssues.filter((i) => i?.severity !== 'warning');
     const imageWarnings = imageIssues.filter((i) => i?.severity === 'warning');
+    const showStaleWorkerHint = imageErrors.some((i) =>
+        typeof i?.message === 'string' && i.message.toLowerCase().includes('response_format'),
+    );
 
     return (
         <div className="rounded-2xl border border-zinc-200/80 bg-white/95 p-6 shadow-xl shadow-zinc-200/40 backdrop-blur-sm dark:border-zinc-700/80 dark:bg-zinc-900/95 dark:shadow-black/40">
@@ -357,6 +360,13 @@ export default function GenerationPreviewExperience({ phase, status, pipelineSte
                             <li key={idx}>{formatImageIssueLine(issue)}</li>
                         ))}
                     </ul>
+                    {showStaleWorkerHint ? (
+                        <p className="mt-3 rounded-lg border border-red-200/80 bg-red-100/50 px-3 py-2 text-xs text-red-950 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-100">
+                            This error usually means the server is still running an older app build in a long-lived queue
+                            worker. On the server run <code className="rounded bg-red-200/80 px-1 dark:bg-red-900/80">php artisan queue:restart</code> (or restart Horizon / PHP-FPM), confirm the latest code is deployed,
+                            then generate the lesson again.
+                        </p>
+                    ) : null}
                 </div>
             ) : null}
 

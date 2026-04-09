@@ -38,7 +38,12 @@ class OpenAiImageGeneratorTest extends TestCase
             }
             $body = $request->data();
 
-            return ! array_key_exists('response_format', $body);
+            return $body === [
+                'model' => 'gpt-image-1',
+                'prompt' => 'A diagram',
+                'n' => 1,
+                'size' => '1024x1024',
+            ];
         });
     }
 
@@ -68,7 +73,12 @@ class OpenAiImageGeneratorTest extends TestCase
             }
             $body = $request->data();
 
-            return ! array_key_exists('response_format', $body);
+            return $body === [
+                'model' => 'dall-e-3',
+                'prompt' => 'A diagram',
+                'n' => 1,
+                'size' => '1024x1024',
+            ];
         });
     }
 
