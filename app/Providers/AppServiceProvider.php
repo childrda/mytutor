@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Services\Ai\ModelRegistry;
+use App\Services\Ai\ModelRegistryHttpExecutor;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
 use Illuminate\Support\ServiceProvider;
 
@@ -15,6 +16,7 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->singleton(GeneratedMediaStorage::class, fn (): GeneratedMediaStorage => GeneratedMediaStorage::fromConfig());
         $this->app->singleton(ModelRegistry::class, fn (): ModelRegistry => new ModelRegistry(config_path('model_registry.json')));
+        $this->app->singleton(ModelRegistryHttpExecutor::class, fn (): ModelRegistryHttpExecutor => new ModelRegistryHttpExecutor);
     }
 
     /**

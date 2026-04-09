@@ -30,4 +30,29 @@ final class ModelRegistryException extends RuntimeException
     {
         return new self("Unknown model registry provider \"{$key}\" under capability \"{$capability}\".");
     }
+
+    public static function missingVariable(string $name): self
+    {
+        return new self("Missing template variable \"{$name}\" for model registry request (no default in template).");
+    }
+
+    public static function invalidTemplate(string $detail): self
+    {
+        return new self('Model registry template error: '.$detail);
+    }
+
+    public static function invalidProviderEntry(string $detail): self
+    {
+        return new self('Invalid model registry provider entry: '.$detail);
+    }
+
+    public static function requestEncodingNotSupported(string $encoding): self
+    {
+        return new self("Model registry request_encoding \"{$encoding}\" is not supported yet.");
+    }
+
+    public static function httpFailed(int $status, string $preview): self
+    {
+        return new self("Model registry HTTP request failed ({$status}): ".$preview);
+    }
 }
