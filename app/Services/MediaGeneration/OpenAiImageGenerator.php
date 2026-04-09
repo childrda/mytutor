@@ -63,8 +63,11 @@ final class OpenAiImageGenerator
             'prompt' => $prompt,
             'n' => 1,
             'size' => $size,
-            'response_format' => 'b64_json',
         ];
+        // DALL·E 2/3 accept response_format; GPT Image and some gateways reject it and return base64 (or URL) by default.
+        if (self::modelAcceptsImagesResponseFormatParameter($model)) {
+            $postBody['response_format'] = 'b64_json';
+        }
 
         $logger = app(LlmExchangeLogger::class);
         $ctx = LlmExchangeLogger::mergeContext([]);
@@ -178,34 +181,86 @@ final class OpenAiImageGenerator
      */
     private function decodeSuccessfulImageResponse(array $json): array
     {
-        $b64 = data_get($json, 'data.0.b64_json');
-        if (! is_string($b64) || $b64 === '') {
-            $keys = array_keys($json);
-            $hint = $keys === [] ? 'empty JSON object' : 'keys: '.implode(', ', array_slice($keys, 0, 8));
-            throw new ImageGenerationException(
-                'Image provider returned no b64_json image data (expected data[0].b64_json). Got '.$hint.'.',
-                ApiJson::GENERATION_FAILED,
-                502,
-            );
-        }
-
-        $binary = base64_decode($b64, true);
-        if ($binary === false || $binary === '') {
-            throw new ImageGenerationException(
-                'Invalid base64 image data from provider',
-                ApiJson::GENERATION_FAILED,
-                502,
-            );
-        }
-
         $revised = data_get($json, 'data.0.revised_prompt');
         $revisedPrompt = is_string($revised) ? $revised : null;
 
-        return [
-            'binary' => $binary,
-            'mime' => 'image/png',
-            'revisedPrompt' => $revisedPrompt,
-        ];
+        $b64 = data_get($json, 'data.0.b64_json');
+        if (is_string($b64) && $b64 !== '') {
+            $binary = base64_decode($b64, true);
+            if ($binary === false || $binary === '') {
+                throw new ImageGenerationException(
+                    'Invalid base64 image data from provider',
+                    ApiJson::GENERATION_FAILED,
+                    502,
+                );
+            }
+
+            return [
+                'binary' => $binary,
+                'mime' => 'image/png',
+                'revisedPrompt' => $revisedPrompt,
+            ];
+        }
+
+        $url = data_get($json, 'data.0.url');
+        if (is_string($url) && filter_var($url, FILTER_VALIDATE_URL)) {
+            $fetchTimeout = min(120.0, max(15.0, (float) config('tutor.image_generation.timeout', 120)));
+            try {
+                $img = Http::timeout($fetchTimeout)
+                    ->connectTimeout(min(30.0, $fetchTimeout))
+                    ->accept('*/*')
+                    ->get($url);
+            } catch (Throwable $e) {
+                throw new ImageGenerationException(
+                    'Image provider returned a URL but download failed: '.$e->getMessage(),
+                    ApiJson::GENERATION_FAILED,
+                    502,
+                );
+            }
+            if (! $img->successful()) {
+                throw new ImageGenerationException(
+                    'Image provider returned a URL but download failed (HTTP '.$img->status().').',
+                    ApiJson::GENERATION_FAILED,
+                    502,
+                );
+            }
+            $binary = $img->body();
+            if ($binary === '') {
+                throw new ImageGenerationException(
+                    'Image provider URL returned an empty body',
+                    ApiJson::GENERATION_FAILED,
+                    502,
+                );
+            }
+            $mime = (string) $img->header('Content-Type');
+            if ($mime === '' || ! str_starts_with($mime, 'image/')) {
+                $mime = 'image/png';
+            }
+
+            return [
+                'binary' => $binary,
+                'mime' => $mime,
+                'revisedPrompt' => $revisedPrompt,
+            ];
+        }
+
+        $keys = array_keys($json);
+        $hint = $keys === [] ? 'empty JSON object' : 'keys: '.implode(', ', array_slice($keys, 0, 8));
+        throw new ImageGenerationException(
+            'Image provider returned no image data (expected data[0].b64_json or data[0].url). Got '.$hint.'.',
+            ApiJson::GENERATION_FAILED,
+            502,
+        );
+    }
+
+    /**
+     * OpenAI DALL·E 2/3 document response_format=url|b64_json. GPT Image models reject this parameter.
+     */
+    private static function modelAcceptsImagesResponseFormatParameter(string $model): bool
+    {
+        $m = strtolower(trim($model));
+
+        return str_starts_with($m, 'dall-e-');
     }
 
     private static function isRetryableHttpStatus(int $status): bool
@@ -272,13 +327,18 @@ final class OpenAiImageGenerator
         }
         $out = $json;
         foreach ($json['data'] as $i => $row) {
-            if (! is_array($row) || ! isset($row['b64_json']) || ! is_string($row['b64_json'])) {
+            if (! is_array($row)) {
                 continue;
             }
-            $b64 = $row['b64_json'];
-            $len = strlen($b64);
-            $out['data'][$i]['b64_json'] = '<<redacted: '.$len.' base64 chars>>';
-            $out['data'][$i]['_decoded_bytes_approx'] = (int) floor($len * 0.75);
+            if (isset($row['b64_json']) && is_string($row['b64_json'])) {
+                $b64 = $row['b64_json'];
+                $len = strlen($b64);
+                $out['data'][$i]['b64_json'] = '<<redacted: '.$len.' base64 chars>>';
+                $out['data'][$i]['_decoded_bytes_approx'] = (int) floor($len * 0.75);
+            }
+            if (isset($row['url']) && is_string($row['url'])) {
+                $out['data'][$i]['url'] = '<<redacted url>>';
+            }
         }
 
         return $out;
