@@ -1093,15 +1093,18 @@ function QuizEditor({ content, onChange, language, readOnly }) {
             <div className="space-y-6">
                 <p className="text-xs text-zinc-500">Playback — answer questions below.</p>
                 {content.questions.map((q, i) => (
-                    <div key={q.id} className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+                    <div
+                        key={q.id}
+                        className="rounded-xl border border-zinc-200 bg-white p-4 text-zinc-900 shadow-sm"
+                    >
                         <p className="text-sm font-medium text-zinc-900">
                             {i + 1}. {q.prompt || '(No prompt)'}
                         </p>
-                        <p className="text-xs text-zinc-500">{q.points} pt(s)</p>
+                        <p className="text-xs text-zinc-600">{q.points} pt(s)</p>
                         {q.type === 'short_answer' ? (
                             <div className="mt-3 space-y-2">
                                 <textarea
-                                    className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm"
+                                    className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400"
                                     rows={3}
                                     placeholder="Your answer"
                                     value={shortDraft[q.id] ?? ''}
@@ -1116,7 +1119,7 @@ function QuizEditor({ content, onChange, language, readOnly }) {
                                     {grading[q.id] ? 'Grading…' : 'Grade with AI'}
                                 </button>
                                 {gradeResult[q.id] ? (
-                                    <p className="text-sm text-zinc-700">
+                                    <p className="text-sm text-zinc-800">
                                         Score: {gradeResult[q.id].score} / {gradeResult[q.id].max} — {gradeResult[q.id].comment}
                                     </p>
                                 ) : null}
@@ -1125,7 +1128,7 @@ function QuizEditor({ content, onChange, language, readOnly }) {
                             <ul className="mt-3 space-y-2">
                                 {q.options.map((opt) => (
                                     <li key={opt.id}>
-                                        <label className="flex cursor-pointer items-start gap-2 text-sm">
+                                        <label className="flex cursor-pointer items-start gap-2 text-sm text-zinc-900">
                                             <input
                                                 type={q.type === 'multiple' ? 'checkbox' : 'radio'}
                                                 name={`pq-${q.id}`}
@@ -1145,9 +1148,9 @@ function QuizEditor({ content, onChange, language, readOnly }) {
                                                         setAnswers((a) => ({ ...a, [q.id]: opt.id }));
                                                     }
                                                 }}
-                                                className="mt-1"
+                                                className="mt-1 h-4 w-4 shrink-0 border-zinc-400 text-indigo-600 accent-indigo-600"
                                             />
-                                            <span>{opt.label || '(empty option)'}</span>
+                                            <span className="text-zinc-900">{opt.label || '(empty option)'}</span>
                                         </label>
                                     </li>
                                 ))}
@@ -1158,7 +1161,7 @@ function QuizEditor({ content, onChange, language, readOnly }) {
                                             const ok = checkMc(q);
                                             window.alert(ok ? 'Correct!' : 'Not quite — try again.');
                                         }}
-                                        className="text-sm font-medium text-indigo-600 hover:underline"
+                                        className="text-sm font-medium text-indigo-700 hover:text-indigo-800 hover:underline"
                                     >
                                         Check answer
                                     </button>
