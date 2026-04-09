@@ -394,7 +394,7 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function generateOutline(
         LessonGenerationJob $job,
@@ -438,7 +438,7 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function generateOutlineStreaming(
         LessonGenerationJob $job,
@@ -499,7 +499,7 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function outlineFromRawBuffer(string $buffer, string $requirement, string $lessonName): array
     {
@@ -524,7 +524,7 @@ final class OrchestratedLessonGenerationService
 
     /**
      * @param  array<string, mixed>  $decoded
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function finishOutlineFromLlmJson(array $decoded, string $requirement, string $lessonName): array
     {
@@ -1083,8 +1083,8 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
-     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>  $outline
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}  $spec
      */
     private function buildSingleSceneUserText(
         string $userBase,
@@ -1234,7 +1234,7 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}  $spec
      */
     private function parseSingleSceneJson(string $raw, array $spec): ?array
     {
@@ -1283,7 +1283,7 @@ final class OrchestratedLessonGenerationService
 
     /**
      * @param  array<string, mixed>  $row
-     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}  $spec
      * @return array<string, mixed>
      */
     private function finalizeSceneRowFromLlm(array $row, array $spec): array
@@ -1305,7 +1305,7 @@ final class OrchestratedLessonGenerationService
      * OpenMAIC-style step 2: one LLM call per slide scene for voiceover + spotlight sequence.
      *
      * @param  list<array<string, mixed>>  $scenes
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>  $outline
      * @param  array{version: int, personas: list<array<string, mixed>>}  $rolesPayload
      * @return list<array<string, mixed>>
      */
@@ -1472,7 +1472,7 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}  $spec
      * @param  array<string, mixed>  $scene
      */
     private function buildActionsUserText(
@@ -1930,8 +1930,8 @@ final class OrchestratedLessonGenerationService
     /**
      * Models often return too few scenes; prompts alone are unreliable. Regenerate once or twice with an explicit fix.
      *
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>  $outline
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function ensureOutlineMeetsMinSceneCount(
         array $outline,
@@ -1994,8 +1994,8 @@ final class OrchestratedLessonGenerationService
     /**
      * Last resort when regenerate calls still return too few items: ask only for additional scenes and merge.
      *
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>  $outline
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function extendOutlineToConfiguredMinimum(
         array $outline,
@@ -2030,8 +2030,8 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $existing
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>  $existing
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function appendOutlineItemsViaLlm(
         array $existing,
@@ -2093,9 +2093,9 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $base
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $additional
-     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>  $base
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>  $additional
+     * @return list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>
      */
     private function mergeAppendedOutlineItems(array $base, array $additional, int $maxScenes): array
     {
@@ -2204,7 +2204,7 @@ final class OrchestratedLessonGenerationService
 
     /**
      * @param  list<array<string, mixed>>  $rawScenes
-     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string}>  $outline
+     * @param  list<array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}>  $outline
      * @return list<array<string, mixed>>
      */
     private function alignScenesToOutline(array $rawScenes, array $outline): array
@@ -2231,7 +2231,7 @@ final class OrchestratedLessonGenerationService
     }
 
     /**
-     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string}  $spec
+     * @param  array{id: string, type: string, title: string, order: int, objective: string, notes: string, layoutHint?: string}  $spec
      * @return array<string, mixed>
      */
     private function skeletonSceneFromSpec(array $spec): array
