@@ -29,6 +29,34 @@ function sortScenes(list) {
     return [...list].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 }
 
+/** Text for the canvas element currently spotlighted (so chat can reference the visible card). */
+function spotlightElementSummary(scene, elementId) {
+    if (!elementId || !scene?.content?.canvas?.elements) {
+        return '';
+    }
+    const el = scene.content.canvas.elements.find((e) => e && e.id === elementId);
+    if (!el || typeof el !== 'object') {
+        return '';
+    }
+    if (el.type === 'card') {
+        const bits = [];
+        if (el.title) {
+            bits.push(String(el.title));
+        }
+        if (el.body) {
+            bits.push(String(el.body));
+        }
+        return bits.join(' — ').slice(0, 500);
+    }
+    if (el.type === 'text' && typeof el.text === 'string' && el.text.trim()) {
+        return el.text.trim().slice(0, 500);
+    }
+    if (el.type === 'image' && typeof el.alt === 'string' && el.alt.trim()) {
+        return `Image: ${el.alt.trim()}`.slice(0, 500);
+    }
+    return '';
+}
+
 function durationMsForAction(a) {
     if (!a) {
         return 2200;
@@ -305,6 +333,13 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
         [currentAction, actions, safeActionIndex],
     );
 
+    const chatScenePosition = useMemo(() => {
+        if (sceneIndex < 0 || sortedScenes.length === 0) {
+            return null;
+        }
+        return { index: sceneIndex, total: sortedScenes.length };
+    }, [sceneIndex, sortedScenes.length]);
+
     const transcript = useMemo(() => {
         const a = currentAction;
         if (!a) {
@@ -341,6 +376,25 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
             speaker: null,
         };
     }, [currentAction, personas]);
+
+    const chatTeachingProgress = useMemo(() => {
+        if (!currentScene || actions.length === 0) {
+            return null;
+        }
+        const elId = effectiveSpotlight?.elementId;
+        const spotlightSummary = elId ? spotlightElementSummary(currentScene, elId) : '';
+        return {
+            stepIndex: safeActionIndex,
+            stepCount: actions.length,
+            transcriptHeadline: transcript.headline,
+            transcriptSnippet: (transcript.body || '').slice(0, 480),
+            ...(elId && spotlightSummary
+                ? { spotlightElementId: elId, spotlightSummary }
+                : elId
+                  ? { spotlightElementId: elId }
+                  : {}),
+        };
+    }, [currentScene, actions.length, safeActionIndex, transcript, effectiveSpotlight]);
 
     useEffect(() => {
         if (!playback.isPlaying || !currentScene || actions.length === 0) {
@@ -561,6 +615,8 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
                                 lessonAgentIds={agentIds}
                                 onLessonAgentIdsChange={onLessonAgentIdsChange}
                                 currentScene={currentScene}
+                                scenePosition={chatScenePosition}
+                                teachingProgress={chatTeachingProgress}
                             />
                         </div>
                     </aside>

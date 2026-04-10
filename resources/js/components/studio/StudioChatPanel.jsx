@@ -22,6 +22,8 @@ function slugify(name) {
     return s || 'agent';
 }
 
+const MAX_SCENE_SUMMARY_CHARS = 3200;
+
 function summarizeContent(content) {
     if (!content || typeof content !== 'object') {
         return '';
@@ -34,8 +36,146 @@ function summarizeContent(content) {
     }
 }
 
-function buildStoreState({ lessonId, lessonName, scene, sessionType, language }) {
-    return {
+function pushLine(lines, line) {
+    const t = typeof line === 'string' ? line.trim() : '';
+    if (t !== '') {
+        lines.push(t);
+    }
+}
+
+/** Human-readable digest of scene content so the model can ground vague questions (e.g. "help me"). */
+function summarizeSceneContentForChat(scene) {
+    if (!scene?.content || typeof scene.content !== 'object') {
+        return summarizeContent(scene?.content);
+    }
+    const sceneType = typeof scene.type === 'string' ? scene.type : '';
+    const c = scene.content;
+    const contentType = typeof c.type === 'string' ? c.type : '';
+
+    if (sceneType === 'slide' || contentType === 'slide' || (c.canvas && typeof c.canvas === 'object')) {
+        const lines = [];
+        const canvas = c.canvas && typeof c.canvas === 'object' ? c.canvas : {};
+        const title = typeof canvas.title === 'string' ? canvas.title.trim() : '';
+        const subtitle = typeof canvas.subtitle === 'string' ? canvas.subtitle.trim() : '';
+        const footer = typeof canvas.footer === 'string' ? canvas.footer.trim() : '';
+        pushLine(lines, title ? `Slide title: ${title}` : 'Slide (untitled)');
+        pushLine(lines, subtitle ? `Subtitle: ${subtitle}` : '');
+        pushLine(lines, footer ? `Footer: ${footer}` : '');
+        const elements = Array.isArray(canvas.elements) ? canvas.elements : [];
+        if (elements.length > 0) {
+            lines.push('Slide elements (layout order; spotlight may emphasize one):');
+        }
+        let n = 0;
+        for (const el of elements) {
+            if (!el || typeof el !== 'object') {
+                continue;
+            }
+            n += 1;
+            const id = typeof el.id === 'string' && el.id ? el.id : '?';
+            const et = typeof el.type === 'string' ? el.type : '';
+            if (et === 'card') {
+                const parts = [`  • Card #${n} [id=${id}]`];
+                if (el.title) {
+                    parts.push(String(el.title));
+                }
+                if (el.body) {
+                    parts.push(String(el.body));
+                }
+                if (Array.isArray(el.bullets)) {
+                    for (const b of el.bullets.slice(0, 8)) {
+                        if (typeof b === 'string' && b.trim()) {
+                            parts.push(`    – ${b.trim()}`);
+                        }
+                    }
+                }
+                if (el.caption) {
+                    parts.push(`    Caption: ${el.caption}`);
+                }
+                lines.push(parts.join('\n'));
+            } else if (et === 'image') {
+                const alt = typeof el.alt === 'string' && el.alt.trim() ? el.alt.trim() : '';
+                lines.push(`  • Image #${n} [id=${id}]${alt ? `: ${alt}` : ''}`);
+            } else {
+                const tx = typeof el.text === 'string' ? el.text.trim() : '';
+                if (tx) {
+                    lines.push(`  • Text #${n} [id=${id}]: ${tx}`);
+                }
+            }
+        }
+        let out = lines.filter(Boolean).join('\n');
+        if (out.length > MAX_SCENE_SUMMARY_CHARS) {
+            out = `${out.slice(0, MAX_SCENE_SUMMARY_CHARS)}…`;
+        }
+        return out || summarizeContent(c);
+    }
+
+    if (sceneType === 'quiz' || contentType === 'quiz') {
+        const qs = Array.isArray(c.questions) ? c.questions : [];
+        const lines = ['Quiz scene:'];
+        qs.slice(0, 24).forEach((q, idx) => {
+            if (!q || typeof q !== 'object') {
+                return;
+            }
+            const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : '';
+            pushLine(lines, prompt ? `  Q${idx + 1}: ${prompt}` : `  Q${idx + 1}`);
+            const opts = Array.isArray(q.options) ? q.options : [];
+            opts.slice(0, 10).forEach((o) => {
+                const lab = typeof o?.label === 'string' ? o.label.trim() : '';
+                if (lab) {
+                    lines.push(`    – ${lab}`);
+                }
+            });
+        });
+        let out = lines.join('\n');
+        if (out.length > MAX_SCENE_SUMMARY_CHARS) {
+            out = `${out.slice(0, MAX_SCENE_SUMMARY_CHARS)}…`;
+        }
+        return out || summarizeContent(c);
+    }
+
+    if (sceneType === 'interactive' || contentType === 'interactive') {
+        const t = typeof c.title === 'string' ? c.title.trim() : '';
+        const lines = [];
+        pushLine(lines, t ? `Interactive activity: ${t}` : 'Interactive embed');
+        let out = lines.join('\n');
+        if (out.length > MAX_SCENE_SUMMARY_CHARS) {
+            out = `${out.slice(0, MAX_SCENE_SUMMARY_CHARS)}…`;
+        }
+        return out || summarizeContent(c);
+    }
+
+    if (sceneType === 'pbl' || contentType === 'pbl') {
+        const pc = c.projectConfig && typeof c.projectConfig === 'object' ? c.projectConfig : {};
+        const lines = [];
+        if (typeof c.brief === 'string' && c.brief.trim()) {
+            pushLine(lines, `PBL brief: ${c.brief.trim().slice(0, 700)}`);
+        }
+        if (typeof pc.title === 'string' && pc.title.trim()) {
+            pushLine(lines, `Project title: ${pc.title.trim()}`);
+        }
+        if (typeof pc.objective === 'string' && pc.objective.trim()) {
+            pushLine(lines, `Objective: ${pc.objective.trim().slice(0, 500)}`);
+        }
+        let out = lines.filter(Boolean).join('\n');
+        if (out.length > MAX_SCENE_SUMMARY_CHARS) {
+            out = `${out.slice(0, MAX_SCENE_SUMMARY_CHARS)}…`;
+        }
+        return out || summarizeContent(c);
+    }
+
+    return summarizeContent(c);
+}
+
+function buildStoreState({
+    lessonId,
+    lessonName,
+    scene,
+    sessionType,
+    language,
+    scenePosition,
+    teachingProgress,
+}) {
+    const state = {
         version: 1,
         lessonId,
         lessonName,
@@ -46,10 +186,51 @@ function buildStoreState({ lessonId, lessonName, scene, sessionType, language })
                   id: scene.id,
                   title: scene.title,
                   type: scene.type,
-                  contentSummary: summarizeContent(scene.content),
+                  contentSummary: summarizeSceneContentForChat(scene),
               }
             : null,
     };
+    if (
+        scenePosition &&
+        typeof scenePosition.index === 'number' &&
+        Number.isFinite(scenePosition.index) &&
+        typeof scenePosition.total === 'number' &&
+        Number.isFinite(scenePosition.total) &&
+        scenePosition.total > 0
+    ) {
+        const total = Math.min(10_000, Math.floor(scenePosition.total));
+        let index = Math.max(0, Math.floor(scenePosition.index));
+        if (total > 0) {
+            index = Math.min(index, total - 1);
+        }
+        state.scenePosition = { index, total };
+    }
+    if (teachingProgress && typeof teachingProgress === 'object') {
+        const tp = { ...teachingProgress };
+        if (typeof tp.stepCount === 'number' && Number.isFinite(tp.stepCount)) {
+            const stepCount = Math.min(500, Math.max(1, Math.floor(tp.stepCount)));
+            let stepIndex = 0;
+            if (typeof tp.stepIndex === 'number' && Number.isFinite(tp.stepIndex)) {
+                stepIndex = Math.min(Math.max(0, Math.floor(tp.stepIndex)), stepCount - 1);
+            }
+            tp.stepIndex = stepIndex;
+            tp.stepCount = stepCount;
+            if (typeof tp.transcriptHeadline === 'string') {
+                tp.transcriptHeadline = tp.transcriptHeadline.trim().slice(0, 128);
+            }
+            if (typeof tp.transcriptSnippet === 'string') {
+                tp.transcriptSnippet = tp.transcriptSnippet.trim().slice(0, 600);
+            }
+            if (typeof tp.spotlightElementId === 'string') {
+                tp.spotlightElementId = tp.spotlightElementId.trim().slice(0, 128);
+            }
+            if (typeof tp.spotlightSummary === 'string') {
+                tp.spotlightSummary = tp.spotlightSummary.trim().slice(0, 600);
+            }
+            state.teachingProgress = tp;
+        }
+    }
+    return state;
 }
 
 function agentById(registry, id) {
@@ -67,6 +248,10 @@ export default function StudioChatPanel({
     lessonAgentIds,
     onLessonAgentIdsChange,
     currentScene,
+    /** @type {{ index: number, total: number } | null | undefined} */
+    scenePosition,
+    /** @type {Record<string, unknown> | null | undefined} */
+    teachingProgress,
 }) {
     const isClassroom = variant === 'classroom';
     const [sessionType, setSessionType] = useState('qa');
@@ -212,6 +397,8 @@ export default function StudioChatPanel({
                 scene: currentScene,
                 sessionType,
                 language: lessonLanguage,
+                scenePosition,
+                teachingProgress,
             }),
             config: {
                 agentIds: selectedAgentIds,
@@ -319,6 +506,8 @@ export default function StudioChatPanel({
         lessonLanguage,
         directorState,
         selectedAgentIds,
+        scenePosition,
+        teachingProgress,
     ]);
 
     const onPickFiles = (ev) => {

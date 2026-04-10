@@ -100,4 +100,55 @@ class TutorChatRequestContextAndPromptTest extends TestCase
         $this->assertStringContainsString('"turnCount":3', $prompt);
         $this->assertStringContainsString('## Director state', $prompt);
     }
+
+    #[Test]
+    public function scene_position_and_teaching_progress_appear_in_prompt(): void
+    {
+        $ctx = TutorChatRequestContext::fromRequestBody([
+            'storeState' => [
+                'lessonId' => 'les-1',
+                'lessonName' => 'Media literacy',
+                'scenePosition' => ['index' => 2, 'total' => 15],
+                'teachingProgress' => [
+                    'stepIndex' => 0,
+                    'stepCount' => 8,
+                    'transcriptHeadline' => 'Speech',
+                    'transcriptSnippet' => 'Today we discuss bias.',
+                    'spotlightElementId' => 'card-1',
+                    'spotlightSummary' => 'Confirmation bias — favors agreeing evidence.',
+                ],
+                'scene' => [
+                    'id' => 'sc-3',
+                    'title' => 'Types of bias',
+                    'type' => 'slide',
+                    'contentSummary' => 'Slide title: Types of bias',
+                ],
+            ],
+            'config' => ['agentIds' => ['tutor']],
+            'directorState' => ['turnCount' => 0, 'agentResponses' => [], 'whiteboardLedger' => []],
+        ]);
+
+        $prompt = TutorChatPromptBuilder::build($ctx);
+
+        $this->assertStringContainsString('Scene position (1-based', $prompt);
+        $this->assertStringContainsString('3 of 15', $prompt);
+        $this->assertStringContainsString('Scripted step: 1 of 8', $prompt);
+        $this->assertStringContainsString('Confirmation bias', $prompt);
+        $this->assertStringContainsString('infer what the learner is probably looking at', $prompt);
+    }
+
+    #[Test]
+    public function scene_position_index_is_clamped_to_total(): void
+    {
+        $ctx = TutorChatRequestContext::fromRequestBody([
+            'storeState' => [
+                'lessonId' => 'x',
+                'scenePosition' => ['index' => 99, 'total' => 3],
+            ],
+            'config' => ['agentIds' => ['tutor']],
+        ]);
+
+        $this->assertSame(2, $ctx->store['scenePosition']['index']);
+        $this->assertSame(3, $ctx->store['scenePosition']['total']);
+    }
 }

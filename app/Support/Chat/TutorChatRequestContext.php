@@ -56,6 +56,8 @@ final class TutorChatRequestContext
             : 1;
 
         $scene = self::parseScene($storeRaw['scene'] ?? null);
+        $scenePosition = self::parseScenePosition($storeRaw['scenePosition'] ?? null);
+        $teachingProgress = self::parseTeachingProgress($storeRaw['teachingProgress'] ?? null);
 
         $store = [
             'version' => $version,
@@ -64,6 +66,8 @@ final class TutorChatRequestContext
             'sessionType' => $sessionType,
             'language' => $language,
             'scene' => $scene,
+            'scenePosition' => $scenePosition,
+            'teachingProgress' => $teachingProgress,
         ];
 
         $director = TutorChatDirectorState::sanitizeIncoming($body['directorState'] ?? null);
@@ -96,6 +100,76 @@ final class TutorChatRequestContext
             'title' => $title,
             'type' => $type,
             'contentSummary' => $summary,
+        ];
+    }
+
+    /**
+     * @return ?array{index: int, total: int}
+     */
+    private static function parseScenePosition(mixed $raw): ?array
+    {
+        if (! is_array($raw)) {
+            return null;
+        }
+
+        $index = isset($raw['index']) && is_numeric($raw['index']) ? (int) $raw['index'] : null;
+        $total = isset($raw['total']) && is_numeric($raw['total']) ? (int) $raw['total'] : null;
+        if ($index === null || $total === null || $total < 1 || $total > 10_000) {
+            return null;
+        }
+
+        if ($index < 0) {
+            $index = 0;
+        }
+        if ($index >= $total) {
+            $index = $total - 1;
+        }
+
+        return ['index' => $index, 'total' => $total];
+    }
+
+    /**
+     * @return ?array{stepIndex: int, stepCount: int, transcriptHeadline: string, transcriptSnippet: string, spotlightElementId: string, spotlightSummary: string}
+     */
+    private static function parseTeachingProgress(mixed $raw): ?array
+    {
+        if (! is_array($raw)) {
+            return null;
+        }
+
+        $stepIndex = isset($raw['stepIndex']) && is_numeric($raw['stepIndex']) ? (int) $raw['stepIndex'] : null;
+        $stepCount = isset($raw['stepCount']) && is_numeric($raw['stepCount']) ? (int) $raw['stepCount'] : null;
+        if ($stepIndex === null || $stepCount === null || $stepCount < 1 || $stepCount > 500) {
+            return null;
+        }
+
+        if ($stepIndex < 0) {
+            $stepIndex = 0;
+        }
+        if ($stepIndex >= $stepCount) {
+            $stepIndex = $stepCount - 1;
+        }
+
+        $headline = isset($raw['transcriptHeadline']) && is_string($raw['transcriptHeadline'])
+            ? self::truncateUtf8(trim($raw['transcriptHeadline']), 256)
+            : '';
+        $snippet = isset($raw['transcriptSnippet']) && is_string($raw['transcriptSnippet'])
+            ? self::truncateUtf8(trim($raw['transcriptSnippet']), 800)
+            : '';
+        $spotEl = isset($raw['spotlightElementId']) && is_string($raw['spotlightElementId'])
+            ? substr(trim($raw['spotlightElementId']), 0, 128)
+            : '';
+        $spotSum = isset($raw['spotlightSummary']) && is_string($raw['spotlightSummary'])
+            ? self::truncateUtf8(trim($raw['spotlightSummary']), 800)
+            : '';
+
+        return [
+            'stepIndex' => $stepIndex,
+            'stepCount' => $stepCount,
+            'transcriptHeadline' => $headline,
+            'transcriptSnippet' => $snippet,
+            'spotlightElementId' => $spotEl,
+            'spotlightSummary' => $spotSum,
         ];
     }
 

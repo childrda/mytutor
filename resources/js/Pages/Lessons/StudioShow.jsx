@@ -80,6 +80,17 @@ export default function StudioShow({ stage, scenes: initialScenes = [] }) {
         return sceneRows.find((s) => s.id === id) ?? sceneRows[0] ?? null;
     }, [sceneRows, lessonForm.currentSceneId]);
 
+    const sceneChatPosition = useMemo(() => {
+        if (!currentScene || sceneRows.length === 0) {
+            return null;
+        }
+        const idx = sceneRows.findIndex((s) => s.id === currentScene.id);
+        if (idx < 0) {
+            return null;
+        }
+        return { index: idx, total: sceneRows.length };
+    }, [currentScene, sceneRows]);
+
     const playbackStateForSlide = lessonForm.meta?.playbackState;
     const studioActions = useMemo(() => normalizeActions(currentScene?.actions), [currentScene?.actions]);
     const studioSafeActionIndex = useMemo(() => {
@@ -826,6 +837,7 @@ export default function StudioShow({ stage, scenes: initialScenes = [] }) {
                     lessonAgentIds={lessonForm.agentIds}
                     onLessonAgentIdsChange={(ids) => updateLessonField({ agentIds: ids })}
                     currentScene={currentScene}
+                    scenePosition={sceneChatPosition}
                 />
                 </div>
             </div>
