@@ -1,0 +1,181 @@
+# .cursorrules
+# These rules govern ALL code generation in this project.
+# Read every rule before generating any code that touches AI models,
+# providers, endpoints, API calls, or the settings system.
+# Phase 2 rules extend Phase 1 rules — both apply.
+
+---
+
+do not push to github unles requested
+
+## ARCHITECTURE OVERVIEW
+
+This project uses a two-layer model registry:
+
+  LAYER 1 — config/providers.json
+    Who the providers are. Static. Developer-managed.
+    Contains: provider identity, capabilities, base URL,
+    auth pattern, and the .env key name for their API key.
+
+  LAYER 2 — config/models.json
+    What models are available. Dynamic. User-managed via settings UI.
+    Contains: model entries per capability, endpoint paths,
+    request formats, response paths.
+
+  ACTIVE — config/active_models.json
+    Which model is currently selected per capability.
+    Written by the settings UI General tab. Read by the resolver.
+
+  SECRETS — .env
+    API keys only. Never shown in UI. Never in JSON files.
+    providers.json references the key NAME (e.g. "OPENAI_API_KEY").
+    The resolver reads the value from os.getenv() at call time.
+
+---
+
+## RULE 1 — Never hardcode a model name, provider name, or endpoint URL
+
+BAD:
+  model="dall-e-3"
+  model="gpt-4o"
+  url="https://api.openai.com/v1/images/generations"
+
+GOOD:
+  model_client.call("image", prompt=prompt)
+  model_client.call("llm", messages=messages)
+
+All model names, endpoints, and request shapes live in models.json.
+If you are writing a model name as a string literal in application code, stop.
+
+---
+
+## RULE 2 — The resolver is the only place that calls external AI APIs
+
+File: app/services/model_client.py
+
+Every AI API call in this project goes through model_client.call().
+No other file constructs payloads, sets auth headers, or calls provider APIs.
+If you are writing an HTTP call to an AI provider outside of model_client.py,
+you are doing it wrong. Move the call there.
+
+---
+
+## RULE 3 — Resolve active model from active_models.json, never assume it
+
+BAD:
+  provider = "openai"
+  model = "dall-e-3"
+
+GOOD:
+  active_id = active_selections[capability]      # from active_models.json
+  model     = model_service.find(capability, active_id)   # from models.json
+  provider  = provider_service.get(model["provider"])     # from providers.json
+
+The resolver always does a three-step lookup: active → model → provider.
+It never skips steps or assumes what is selected.
+
+---
+
+## RULE 4 — API keys come from .env via the provider's env_key field
+
+BAD:
+  api_key = "sk-abc123"
+  api_key = settings.openai_key
+
+GOOD:
+  api_key = os.getenv(provider["env_key"])
+
+The provider entry in providers.json tells the resolver which .env variable
+to read. The resolver fetches it at call time. The key never appears in JSON,
+code, or the settings UI.
+
+---
+
+## RULE 5 — Adding a new model requires only a models.json entry, no code
+
+If a user wants to add GPT-6, a new Stability model, or any other model:
+  → They click "+ Add" in the settings UI
+  → They fill in the form (provider, model id, request format JSON)
+  → The UI writes a new entry to models.json via the API
+  → Done. Zero code changes. Zero restart required.
+
+Never write code that needs to change when a new model is added.
+
+---
+
+## RULE 6 — Adding a new provider requires only a providers.json entry
+
+If a new provider needs to be supported:
+  → Add one entry to config/providers.json
+  → Add their API key name to .env.example
+  → Done. No new client classes. No new if/else branches. No new code.
+
+---
+
+## RULE 7 — The settings UI is the write layer for models and active selections
+
+The settings page at /settings is the only place users manage:
+  - Which models are available (models.json)
+  - Which model is active per capability (active_models.json)
+
+The settings UI calls the API endpoints in app/api/settings_api.py.
+Those endpoints read and write the JSON files.
+Nothing else writes to models.json or active_models.json.
+
+---
+
+## RULE 8 — The settings UI never shows or stores API keys
+
+API keys stay in .env on the server.
+The settings UI shows "Server key configured" when an env key is present.
+It may allow a browser-side override key for development purposes only.
+That override is stored in the browser, never sent to the server in plaintext,
+and never written to any file.
+
+---
+
+## RULE 9 — Capability keys are fixed — use them exactly
+
+  llm
+  image
+  tts
+  asr
+  video
+  web_search
+  pdf
+
+Use these exact strings everywhere: in models.json, active_models.json,
+providers.json capabilities arrays, API routes, and model_client.call() calls.
+Do not invent variations.
+
+---
+
+## FILE REFERENCE
+
+  config/providers.json          ← provider catalog (developer-managed)
+  config/models.json             ← model list (user-managed via UI)
+  config/active_models.json      ← active selection per capability (UI-managed)
+  .env                           ← API keys only (never in UI or JSON)
+  app/services/model_client.py   ← ONLY place that calls AI provider APIs
+  app/services/provider_service.py  ← loads providers.json
+  app/services/model_service.py     ← CRUD for models.json
+  app/api/settings_api.py           ← API endpoints for settings UI
+
+---
+
+## QUICK REFERENCE — How to call each capability
+
+  LLM:         model_client.call("llm", messages=[...])
+  Image:       model_client.call("image", prompt="...")
+  TTS:         model_client.call("tts", text="...", voice="...")
+  ASR:         model_client.call("asr", audio_file=...)
+  Web Search:  model_client.call("web_search", query="...")
+
+---
+
+## PHASE 1 RULES STILL APPLY
+
+Never construct provider-specific payloads inline.
+Never add provider-specific if/else branching anywhere.
+Never create separate client classes per provider.
+All of the original .cursorrules restrictions remain in force.

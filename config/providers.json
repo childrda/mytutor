@@ -1,0 +1,381 @@
+{
+  "schema_version": 1,
+  "_meta": {
+    "note": "Developer-managed provider catalog (Phase 2). Provider ids must match the \"provider\" field on rows in config/models.json."
+  },
+  "providers": {
+    "openai": {
+      "name": "OpenAI",
+      "icon": "openai",
+      "capabilities": ["llm", "image", "tts", "asr"],
+      "base_url": "https://api.openai.com/v1",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "OPENAI_API_KEY",
+      "supports_custom_base_url": false,
+      "request_templates": {
+        "llm": {
+          "model": "{model_id}",
+          "messages": "{messages}",
+          "temperature": "{temperature|0.7}",
+          "max_completion_tokens": "{max_completion_tokens|2048}"
+        },
+        "image": {
+          "model": "{model_id}",
+          "prompt": "{prompt}",
+          "n": 1,
+          "size": "{size|1024x1024}"
+        }
+      }
+    },
+    "anthropic": {
+      "name": "Anthropic",
+      "icon": "anthropic",
+      "capabilities": ["llm"],
+      "base_url": "https://api.anthropic.com/v1",
+      "auth_header": "x-api-key",
+      "auth_scheme": "{api_key}",
+      "env_key": "ANTHROPIC_API_KEY",
+      "supports_custom_base_url": false
+    },
+    "google": {
+      "name": "Google AI Studio / Gemini",
+      "icon": "google",
+      "capabilities": ["llm"],
+      "base_url": "https://generativelanguage.googleapis.com",
+      "auth_header": "X-Goog-Api-Key",
+      "auth_scheme": "{api_key}",
+      "env_key": "GOOGLE_API_KEY",
+      "supports_custom_base_url": false
+    },
+    "groq": {
+      "name": "Groq",
+      "icon": "groq",
+      "capabilities": ["llm", "asr"],
+      "base_url": "https://api.groq.com/openai/v1",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "GROQ_API_KEY",
+      "supports_custom_base_url": false
+    },
+    "deepseek": {
+      "name": "DeepSeek",
+      "icon": "deepseek",
+      "capabilities": ["llm"],
+      "base_url": "https://api.deepseek.com/v1",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "DEEPSEEK_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "qwen": {
+      "name": "Qwen (OpenAI-compatible)",
+      "icon": "qwen",
+      "capabilities": ["llm"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "QWEN_API_KEY",
+      "supports_custom_base_url": true,
+      "_note": "Set QWEN_BASE_URL + QWEN_API_KEY"
+    },
+    "kimi": {
+      "name": "Kimi",
+      "icon": "kimi",
+      "capabilities": ["llm"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "KIMI_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "minimax": {
+      "name": "MiniMax",
+      "icon": "minimax",
+      "capabilities": ["llm", "video"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "MINIMAX_API_KEY",
+      "supports_custom_base_url": true,
+      "_note": "LLM base often OpenAI-compatible; video uses tutor.video_generation.base_url when polling."
+    },
+    "glm": {
+      "name": "GLM",
+      "icon": "glm",
+      "capabilities": ["llm"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "GLM_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "siliconflow": {
+      "name": "SiliconFlow",
+      "icon": "siliconflow",
+      "capabilities": ["llm"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "SILICONFLOW_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "doubao": {
+      "name": "Doubao",
+      "icon": "doubao",
+      "capabilities": ["llm"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "DOUBAO_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "grok": {
+      "name": "xAI Grok",
+      "icon": "grok",
+      "capabilities": ["llm"],
+      "base_url": "https://api.x.ai/v1",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "GROK_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "elevenlabs": {
+      "name": "ElevenLabs",
+      "icon": "elevenlabs",
+      "capabilities": ["tts"],
+      "base_url": "https://api.elevenlabs.io/v1",
+      "auth_header": "xi-api-key",
+      "auth_scheme": "{api_key}",
+      "env_key": "TTS_ELEVENLABS_API_KEY",
+      "supports_custom_base_url": true,
+      "_note": "Integration catalog uses TTS_ELEVENLABS_* env prefix."
+    },
+    "stability": {
+      "name": "Stability AI",
+      "icon": "stability",
+      "capabilities": ["image"],
+      "base_url": "https://api.stability.ai",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "STABILITY_API_KEY",
+      "supports_custom_base_url": false
+    },
+    "azure": {
+      "name": "Azure OpenAI",
+      "icon": "azure",
+      "capabilities": ["llm", "image", "tts", "asr"],
+      "base_url": "{base_url}",
+      "auth_header": "api-key",
+      "auth_scheme": "{api_key}",
+      "env_key": "AZURE_OPENAI_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "ollama": {
+      "name": "Ollama",
+      "icon": "ollama",
+      "capabilities": ["llm"],
+      "base_url": "{base_url}",
+      "auth_header": null,
+      "auth_scheme": null,
+      "env_key": null,
+      "supports_custom_base_url": true,
+      "_note": "Local — no API key in .env by default."
+    },
+    "custom": {
+      "name": "Custom OpenAI-compatible",
+      "icon": "custom",
+      "capabilities": ["llm", "image", "tts", "asr", "web_search"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "{env_key}",
+      "supports_custom_base_url": true,
+      "_note": "Generic entry; env key name is chosen per deployment."
+    },
+    "nano-banana": {
+      "name": "Nano Banana (Gemini image gateway)",
+      "icon": "google",
+      "capabilities": ["image"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "IMAGE_NANO_BANANA_API_KEY",
+      "supports_custom_base_url": true,
+      "_note": "OpenAI-shaped contract in model_registry; confirm vendor base URL."
+    },
+    "seedream": {
+      "name": "Seedream",
+      "icon": "image",
+      "capabilities": ["image"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "IMAGE_SEEDREAM_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "qwen-image": {
+      "name": "Qwen Image",
+      "icon": "qwen",
+      "capabilities": ["image"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "IMAGE_QWEN_IMAGE_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "minimax-image": {
+      "name": "MiniMax Image",
+      "icon": "minimax",
+      "capabilities": ["image"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "IMAGE_MINIMAX_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "grok-image": {
+      "name": "Grok Image",
+      "icon": "grok",
+      "capabilities": ["image"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "IMAGE_GROK_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "glm-tts": {
+      "name": "GLM TTS",
+      "icon": "glm",
+      "capabilities": ["tts"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "TTS_GLM_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "qwen-tts": {
+      "name": "Qwen TTS",
+      "icon": "qwen",
+      "capabilities": ["tts"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "TTS_QWEN_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "doubao-tts": {
+      "name": "Doubao TTS",
+      "icon": "doubao",
+      "capabilities": ["tts"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "TTS_DOUBAO_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "minimax-tts": {
+      "name": "MiniMax TTS",
+      "icon": "minimax",
+      "capabilities": ["tts"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "TTS_MINIMAX_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "qwen-asr": {
+      "name": "Qwen ASR",
+      "icon": "qwen",
+      "capabilities": ["asr"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "ASR_QWEN_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "unpdf": {
+      "name": "Unpdf HTTP",
+      "icon": "pdf",
+      "capabilities": ["pdf"],
+      "base_url": "{base_url}",
+      "auth_header": null,
+      "auth_scheme": null,
+      "env_key": null,
+      "supports_custom_base_url": true,
+      "_note": "Use PDF_UNPDF_BASE_URL; registry entries are stubs until HTTP PDF client exists."
+    },
+    "mineru": {
+      "name": "MinerU HTTP",
+      "icon": "pdf",
+      "capabilities": ["pdf"],
+      "base_url": "{base_url}",
+      "auth_header": null,
+      "auth_scheme": null,
+      "env_key": null,
+      "supports_custom_base_url": true,
+      "_note": "Use PDF_MINERU_BASE_URL."
+    },
+    "seedance": {
+      "name": "Seedance",
+      "icon": "video",
+      "capabilities": ["video"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "VIDEO_SEEDANCE_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "kling": {
+      "name": "Kling",
+      "icon": "video",
+      "capabilities": ["video"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "VIDEO_KLING_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "veo": {
+      "name": "VEO",
+      "icon": "video",
+      "capabilities": ["video"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "VIDEO_VEO_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "sora": {
+      "name": "Sora",
+      "icon": "video",
+      "capabilities": ["video"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "VIDEO_SORA_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "grok-video": {
+      "name": "Grok Video",
+      "icon": "grok",
+      "capabilities": ["video"],
+      "base_url": "{base_url}",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer {api_key}",
+      "env_key": "VIDEO_GROK_API_KEY",
+      "supports_custom_base_url": true
+    },
+    "tavily": {
+      "name": "Tavily",
+      "icon": "tavily",
+      "capabilities": ["web_search"],
+      "base_url": "https://api.tavily.com",
+      "auth_header": null,
+      "auth_scheme": null,
+      "env_key": "TAVILY_API_KEY",
+      "supports_custom_base_url": false,
+      "_note": "API key is sent in JSON body per model_registry entry."
+    }
+  }
+}

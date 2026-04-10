@@ -12,7 +12,9 @@ use App\Http\Controllers\Web\LessonGenerationPreviewController;
 use App\Http\Controllers\Web\LessonGenerationWebController;
 use App\Http\Controllers\Web\LessonStudioController;
 use App\Http\Controllers\Web\PublicLessonController;
+use App\Http\Controllers\Web\SettingsCatalogController;
 use App\Http\Controllers\Web\SettingsController;
+use App\Http\Controllers\Web\SettingsRegistryActiveController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', HomeController::class)->name('home');
@@ -28,6 +30,34 @@ Route::middleware('guest')->group(function (): void {
 Route::middleware('auth')->group(function (): void {
     Route::post('logout', [AuthenticatedSessionController::class, 'destroy'])->name('logout');
     Route::get('settings', SettingsController::class)->name('settings');
+    Route::get('settings/registry-active', [SettingsRegistryActiveController::class, 'show']);
+    Route::put('settings/registry-active', [SettingsRegistryActiveController::class, 'update']);
+
+    Route::prefix('settings/catalog')->group(function (): void {
+        Route::get('providers', [SettingsCatalogController::class, 'providers']);
+        Route::get('models', [SettingsCatalogController::class, 'modelsIndex']);
+        Route::get('models/{capability}', [SettingsCatalogController::class, 'modelsForCapability'])
+            ->where('capability', '[a-z_]+');
+        Route::post('models/{capability}', [SettingsCatalogController::class, 'storeModel'])
+            ->where('capability', '[a-z_]+');
+        Route::post('models/{capability}/provider-base-url', [SettingsCatalogController::class, 'updateProviderBaseUrl'])
+            ->where('capability', '[a-z_]+');
+        Route::post('models/{capability}/variant', [SettingsCatalogController::class, 'storeModelVariant'])
+            ->where('capability', '[a-z_]+');
+        Route::post('models/{capability}/delete-bundle', [SettingsCatalogController::class, 'destroyModelBundle'])
+            ->where('capability', '[a-z_]+');
+        Route::put('models/{capability}/{id}', [SettingsCatalogController::class, 'updateModel'])
+            ->where('capability', '[a-z_]+')
+            ->where('id', '[a-zA-Z0-9_.-]+');
+        Route::delete('models/{capability}/{id}', [SettingsCatalogController::class, 'destroyModel'])
+            ->where('capability', '[a-z_]+')
+            ->where('id', '[a-zA-Z0-9_.-]+');
+        Route::post('models/{capability}/{id}/test', [SettingsCatalogController::class, 'testModel'])
+            ->where('capability', '[a-z_]+')
+            ->where('id', '[a-zA-Z0-9_.-]+');
+        Route::get('active', [SettingsCatalogController::class, 'activeShow']);
+        Route::put('active', [SettingsCatalogController::class, 'activeUpdate']);
+    });
     Route::get('studio', [LessonStudioController::class, 'index'])->name('studio');
     Route::get('studio/{lesson}', [LessonStudioController::class, 'show'])->name('studio.lesson');
     Route::get('classroom/{lesson}', [ClassroomLessonController::class, 'show'])->name('classroom.lesson');

@@ -2,12 +2,18 @@
 
 namespace App\Services\MediaGeneration;
 
+use App\Services\Ai\ModelRegistry;
+use App\Services\Ai\ModelRegistryException;
+use App\Services\Ai\ModelRegistryHttpExecutor;
+use App\Services\Ai\ModelRegistryTemplate;
+use App\Services\Ai\RegistryTemplateVarsResolver;
 use App\Support\ApiJson;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
 /**
  * MiniMax text-to-video: create task, poll, resolve download URL (Phase 4.4).
+ * When `tutor.active.video` resolves to `minimax-video`, the submit POST uses {@see ModelRegistryHttpExecutor} (Phase B6); poll/retrieve/download stay on this class with `tutor.video_generation.base_url`.
  *
  * @see https://platform.minimax.io/docs/api-reference/video-generation-t2v
  */
@@ -19,6 +25,108 @@ final class MinimaxT2vVideoClient
      * @throws VideoGenerationException
      */
     public function createTask(
+        string $apiKey,
+        string $baseUrl,
+        string $model,
+        string $prompt,
+        ?int $duration,
+        ?string $resolution,
+    ): array {
+        $registry = app(ModelRegistry::class);
+        if ($registry->hasActive('video') && $registry->activeKey('video') === 'minimax-video') {
+            return $this->createTaskViaModelRegistry($apiKey, $baseUrl, $model, $prompt, $duration, $resolution);
+        }
+
+        return $this->createTaskLegacy($apiKey, $baseUrl, $model, $prompt, $duration, $resolution);
+    }
+
+    /**
+     * @return array{taskId: string}
+     *
+     * @throws VideoGenerationException
+     */
+    private function createTaskViaModelRegistry(
+        string $apiKey,
+        string $baseUrl,
+        string $model,
+        string $prompt,
+        ?int $duration,
+        ?string $resolution,
+    ): array {
+        $registry = app(ModelRegistry::class);
+        $entry = $registry->activeEntry('video');
+        if (! isset($entry['request_format']) || ! is_array($entry['request_format'])) {
+            $key = $registry->activeKey('video') ?? '';
+
+            throw new VideoGenerationException(
+                'Active video registry provider "'.$key.'" has no request_format (stub). '
+                .'Set TUTOR_ACTIVE_VIDEO=minimax-video, save it in Settings (when env is unset), or clear the active key for legacy submit.',
+                ApiJson::INVALID_REQUEST,
+                400,
+            );
+        }
+
+        $baseUrl = rtrim($baseUrl, '/');
+        $timeout = (float) config('tutor.video_generation.submit_timeout', 60);
+        $vars = RegistryTemplateVarsResolver::merge('video', $entry, [
+            'api_key' => $apiKey,
+            'base_url' => $baseUrl,
+            'model' => $model,
+            'prompt' => $prompt,
+            'timeout' => $timeout,
+        ]);
+
+        try {
+            $expanded = ModelRegistryTemplate::expandRequestFormat($entry['request_format'], $vars);
+        } catch (ModelRegistryException $e) {
+            throw $this->mapModelRegistryExceptionToVideo($e);
+        }
+
+        if ($duration !== null) {
+            $expanded['duration'] = $duration;
+        }
+        if ($resolution !== null && $resolution !== '') {
+            $expanded['resolution'] = $resolution;
+        }
+
+        try {
+            $result = app(ModelRegistryHttpExecutor::class)->executeWithResolvedJsonBody($entry, $expanded, $vars);
+        } catch (ModelRegistryException $e) {
+            throw $this->mapModelRegistryExceptionToVideo($e);
+        }
+
+        $json = $result->json;
+        if (! is_array($json)) {
+            throw new VideoGenerationException(
+                'Video provider returned an invalid response',
+                ApiJson::UPSTREAM_ERROR,
+                502,
+            );
+        }
+
+        $this->assertBaseResp($json, $result->status);
+
+        $taskId = $result->extracted;
+        if (! is_string($taskId) || $taskId === '') {
+            $taskId = data_get($json, 'task_id');
+        }
+        if (! is_string($taskId) || $taskId === '') {
+            throw new VideoGenerationException(
+                'Video provider returned no task id',
+                ApiJson::GENERATION_FAILED,
+                502,
+            );
+        }
+
+        return ['taskId' => $taskId];
+    }
+
+    /**
+     * @return array{taskId: string}
+     *
+     * @throws VideoGenerationException
+     */
+    private function createTaskLegacy(
         string $apiKey,
         string $baseUrl,
         string $model,
@@ -76,6 +184,23 @@ final class MinimaxT2vVideoClient
         }
 
         return ['taskId' => $taskId];
+    }
+
+    private function mapModelRegistryExceptionToVideo(ModelRegistryException $e): VideoGenerationException
+    {
+        $status = null;
+        if (preg_match('/\((\d+)\)/', $e->getMessage(), $m)) {
+            $status = (int) $m[1];
+        }
+        if ($status === 401) {
+            return new VideoGenerationException('Invalid or rejected API key', ApiJson::MISSING_API_KEY, 401);
+        }
+
+        return new VideoGenerationException(
+            'Video provider request failed: '.$e->getMessage(),
+            ApiJson::UPSTREAM_ERROR,
+            ($status !== null && $status >= 400 && $status < 600) ? $status : 502,
+        );
     }
 
     /**

@@ -10,17 +10,18 @@ use Tests\TestCase;
 class ModelRegistryTest extends TestCase
 {
     #[Test]
-    public function container_resolves_singleton(): void
+    public function container_resolves_fresh_registry_each_time(): void
     {
         $a = $this->app->make(ModelRegistry::class);
         $b = $this->app->make(ModelRegistry::class);
-        $this->assertSame($a, $b);
+        $this->assertNotSame($a, $b);
+        $this->assertSame($a->schemaVersion(), $b->schemaVersion());
     }
 
     #[Test]
     public function loads_default_registry_with_schema_version_1(): void
     {
-        $r = new ModelRegistry(config_path('model_registry.json'));
+        $r = new ModelRegistry(config_path('models.json'));
         $this->assertSame(1, $r->schemaVersion());
         $this->assertArrayHasKey('llm', $r->all());
     }
@@ -28,7 +29,7 @@ class ModelRegistryTest extends TestCase
     #[Test]
     public function get_returns_llm_openai_entry(): void
     {
-        $r = new ModelRegistry(config_path('model_registry.json'));
+        $r = new ModelRegistry(config_path('models.json'));
         $entry = $r->get('llm', 'openai');
         $this->assertSame('openai', $entry['provider']);
         $this->assertArrayHasKey('request_format', $entry);
@@ -37,7 +38,7 @@ class ModelRegistryTest extends TestCase
     #[Test]
     public function get_returns_stub_pdf_entry(): void
     {
-        $r = new ModelRegistry(config_path('model_registry.json'));
+        $r = new ModelRegistry(config_path('models.json'));
         $entry = $r->get('pdf', 'unpdf');
         $this->assertArrayHasKey('_note', $entry);
     }
@@ -45,7 +46,7 @@ class ModelRegistryTest extends TestCase
     #[Test]
     public function has_returns_expected(): void
     {
-        $r = new ModelRegistry(config_path('model_registry.json'));
+        $r = new ModelRegistry(config_path('models.json'));
         $this->assertTrue($r->has('image', 'dall-e-3'));
         $this->assertFalse($r->has('llm', 'nonexistent-provider'));
         $this->assertFalse($r->has('not-a-capability', 'openai'));
@@ -54,7 +55,7 @@ class ModelRegistryTest extends TestCase
     #[Test]
     public function get_throws_for_unknown_capability(): void
     {
-        $r = new ModelRegistry(config_path('model_registry.json'));
+        $r = new ModelRegistry(config_path('models.json'));
         $this->expectException(ModelRegistryException::class);
         $this->expectExceptionMessage('Unknown model registry capability');
         $r->get('unknown_cap', 'x');
@@ -63,16 +64,16 @@ class ModelRegistryTest extends TestCase
     #[Test]
     public function get_throws_for_unknown_provider(): void
     {
-        $r = new ModelRegistry(config_path('model_registry.json'));
+        $r = new ModelRegistry(config_path('models.json'));
         $this->expectException(ModelRegistryException::class);
-        $this->expectExceptionMessage('Unknown model registry provider');
+        $this->expectExceptionMessage('Unknown models.json model id');
         $r->get('llm', 'no-such-llm');
     }
 
     #[Test]
     public function provider_keys_excludes_meta_style_keys(): void
     {
-        $r = new ModelRegistry(config_path('model_registry.json'));
+        $r = new ModelRegistry(config_path('models.json'));
         $keys = $r->providerKeys('llm');
         $this->assertContains('openai', $keys);
         $this->assertNotContains('_meta', $keys);

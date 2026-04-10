@@ -9,7 +9,6 @@ use App\Services\Integrations\IntegrationProbes;
 use App\Support\ApiJson;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
 use Throwable;
 
 class VerifyIntegrationController extends Controller
@@ -25,19 +24,23 @@ class VerifyIntegrationController extends Controller
         }
 
         try {
-            $res = Http::withToken($apiKey, 'Bearer')
-                ->acceptJson()
-                ->timeout(30)
-                ->post($baseUrl.'/chat/completions', array_merge([
-                    'model' => $model,
-                    'messages' => [['role' => 'user', 'content' => 'ping']],
-                ], LlmClient::completionLimitPayload(1)));
-
-            if (! $res->successful()) {
-                return ApiJson::success(['ok' => false, 'status' => $res->status(), 'body' => $res->body()]);
+            $result = LlmClient::verifyChatCompletionsPing($baseUrl, $apiKey, $model, 30.0);
+            if ($result['ok']) {
+                return ApiJson::success(['ok' => true]);
             }
 
-            return ApiJson::success(['ok' => true]);
+            $payload = ['ok' => false];
+            if (isset($result['status'])) {
+                $payload['status'] = $result['status'];
+            }
+            if (isset($result['body'])) {
+                $payload['body'] = $result['body'];
+            }
+            if (isset($result['error'])) {
+                $payload['error'] = $result['error'];
+            }
+
+            return ApiJson::success($payload);
         } catch (Throwable $e) {
             return ApiJson::success(['ok' => false, 'error' => $e->getMessage()]);
         }
@@ -143,7 +146,7 @@ class VerifyIntegrationController extends Controller
 
         return ApiJson::success([
             'ok' => $configured,
-            'message' => 'Configure PDF_* env vars for your PDF extraction backend.',
+            'message' => 'PDF text extraction uses local parsing (smalot/pdfparser; tutor.pdf_parse). PDF_* env keys are catalog metadata; HTTP registry wiring for pdf is not used in the app yet.',
         ]);
     }
 }

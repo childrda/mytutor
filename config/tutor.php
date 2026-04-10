@@ -17,6 +17,14 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Model list JSON (Phase 4 — Settings catalog API)
+    |--------------------------------------------------------------------------
+    | Default: config/models.json. Override for tests or alternate deploy layout.
+    */
+    'models_json_path' => env('TUTOR_MODELS_JSON_PATH'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Provider env maps → public API id (metadata only via /api/integrations)
     |--------------------------------------------------------------------------
     */
@@ -73,6 +81,30 @@ return [
 
     'web_search' => [
         'TAVILY' => 'tavily',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Active model registry keys (Phase 4 + B4)
+    |--------------------------------------------------------------------------
+    | Values must match a model id under the same capability in config/models.json
+    | (e.g. TUTOR_ACTIVE_LLM=openai → llm.openai). Leave empty to use legacy paths or a value saved in Settings
+    | (tutor_registry_actives table, global for all users).
+    |
+    | Resolution order: non-empty env-driven config here wins; otherwise the database value from Settings;
+    | otherwise null (legacy executor paths only).
+    |
+    | After changing .env: php artisan config:clear; restart queue workers so jobs pick up env changes.
+    | DB-only changes from Settings apply on the next request (no config:clear).
+    */
+    'active' => [
+        'llm' => env('TUTOR_ACTIVE_LLM'),
+        'image' => env('TUTOR_ACTIVE_IMAGE'),
+        'tts' => env('TUTOR_ACTIVE_TTS'),
+        'asr' => env('TUTOR_ACTIVE_ASR'),
+        'web_search' => env('TUTOR_ACTIVE_WEB_SEARCH'),
+        'pdf' => env('TUTOR_ACTIVE_PDF'),
+        'video' => env('TUTOR_ACTIVE_VIDEO'),
     ],
 
     'default_chat' => [
@@ -280,12 +312,15 @@ return [
         'format' => env('TUTOR_OPENAI_TTS_FORMAT', 'mp3'),
         'max_input_chars' => max(1, min(4096, (int) env('TUTOR_TTS_MAX_INPUT_CHARS', 4096))),
         'timeout' => max(15.0, (float) env('TUTOR_TTS_REQUEST_TIMEOUT', 120)),
+        'http_max_attempts' => max(1, min(5, (int) env('TUTOR_TTS_HTTP_MAX_ATTEMPTS', 2))),
     ],
 
     /*
     |--------------------------------------------------------------------------
-    | Video generation (Phase 4.4): MiniMax async T2V — POST /api/generate/video, GET poll
+    | Video generation (Phase 4.4 + B6): MiniMax async T2V — POST /api/generate/video, GET poll
     |--------------------------------------------------------------------------
+    | When `tutor.active.video` is `minimax-video`, the submit POST uses models.json + executor;
+    | poll/query, file retrieve, and binary download still use the base URL and key below.
     */
     'video_generation' => [
         'base_url' => rtrim((string) env(
@@ -325,7 +360,7 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | POST /api/chat, /api/parse-pdf, lesson generation, poll (Phase 6): 0 = off
+    | Route throttles: POST /api/chat, /api/parse-pdf, lesson generation, poll; 0 = off
     |--------------------------------------------------------------------------
     */
     'throttle' => [

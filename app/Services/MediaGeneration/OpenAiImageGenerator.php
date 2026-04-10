@@ -3,6 +3,11 @@
 namespace App\Services\MediaGeneration;
 
 use App\Services\Ai\LlmExchangeLogger;
+use App\Services\Ai\ModelRegistry;
+use App\Services\Ai\ModelRegistryException;
+use App\Services\Ai\ModelRegistryHttpExecutor;
+use App\Services\Ai\ModelRegistryTemplate;
+use App\Services\Ai\RegistryTemplateVarsResolver;
 use App\Support\ApiJson;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
@@ -16,6 +21,9 @@ use Throwable;
  * Request JSON is intentionally only model, prompt, n, size (no response_format). Queue workers and
  * Octane keep PHP in memory — after deploying changes here run `php artisan queue:restart` (or
  * `php artisan horizon:terminate` for Horizon) so image jobs pick up the new code.
+ *
+ * When {@see config('tutor.active.image')} is set, requests use {@see config/models.json}
+ * via {@see ModelRegistryHttpExecutor} (Phase 5). Unset active image key (env, Settings DB, or both) for legacy path only.
  */
 final class OpenAiImageGenerator
 {
@@ -53,15 +61,39 @@ final class OpenAiImageGenerator
         $apiKey = $overrideApiKey !== null && $overrideApiKey !== ''
             ? $overrideApiKey
             : (string) config('tutor.image_generation.api_key');
-        if ($apiKey === '') {
-            throw new ImageGenerationException('API key is required', ApiJson::MISSING_API_KEY, 401);
-        }
 
         $baseUrl = rtrim((string) config('tutor.image_generation.base_url'), '/');
-        $model = $model !== null && $model !== '' ? $model : (string) config('tutor.image_generation.model', 'dall-e-3');
+        $explicitModel = $model !== null && trim((string) $model) !== '';
+        $model = $explicitModel
+            ? trim((string) $model)
+            : (string) config('tutor.image_generation.model', 'dall-e-3');
+        $registry = app(ModelRegistry::class);
+        if (! $explicitModel && $registry->hasActive('image')) {
+            try {
+                $rowDefault = ModelRegistryTemplate::defaultModelIdFromEntry($registry->activeEntry('image'));
+                if (is_string($rowDefault) && $rowDefault !== '') {
+                    $model = $rowDefault;
+                }
+            } catch (Throwable) {
+                // keep config default
+            }
+        }
         $size = $size !== null && $size !== '' ? $size : (string) config('tutor.image_generation.default_size', '1024x1024');
         $size = self::resolveImageSizeForModel($model, $size);
         $this->assertValidSizeForModel($model, $size);
+
+        if ($registry->hasActive('image')) {
+            // Do not pass legacy tutor.image_* api_key/base_url into merge: they override the active
+            // row and provider catalog (wrong key/URL → 401). Resolver fills provider env_key, then
+            // legacy config as fallback (see RegistryTemplateVarsResolver).
+            $regKey = $overrideApiKey !== null && $overrideApiKey !== '' ? $overrideApiKey : '';
+
+            return $this->generateViaModelRegistry($prompt, $model, $size, $regKey, '');
+        }
+
+        if ($apiKey === '') {
+            throw new ImageGenerationException('API key is required', ApiJson::MISSING_API_KEY, 401);
+        }
 
         $timeout = (float) config('tutor.image_generation.timeout', 120);
         $url = $baseUrl.'/images/generations';
@@ -172,6 +204,162 @@ final class OpenAiImageGenerator
     }
 
     /**
+     * @return array{binary: string, mime: string, revisedPrompt: ?string}
+     *
+     * @throws ImageGenerationException
+     */
+    private function generateViaModelRegistry(
+        string $prompt,
+        string $model,
+        string $size,
+        string $apiKey,
+        string $baseUrl,
+    ): array {
+        $registry = app(ModelRegistry::class);
+        $entry = $registry->activeEntry('image');
+        if (! isset($entry['request_format']) || ! is_array($entry['request_format'])) {
+            $key = $registry->activeKey('image') ?? '';
+
+            throw new ImageGenerationException(
+                'Active image registry provider "'.$key.'" has no request_format (stub). '
+                .'Set TUTOR_ACTIVE_IMAGE, save an executable provider in Settings (when env is unset), or clear the active key for legacy generation.',
+                ApiJson::INVALID_REQUEST,
+                400,
+            );
+        }
+
+        $timeout = (float) config('tutor.image_generation.timeout', 120);
+        $vars = RegistryTemplateVarsResolver::merge('image', $entry, [
+            'api_key' => $apiKey,
+            'base_url' => rtrim($baseUrl, '/'),
+            'prompt' => $prompt,
+            'model' => $model,
+            'size' => $size,
+            'timeout' => $timeout,
+        ]);
+        if (trim((string) ($vars['api_key'] ?? '')) === '') {
+            throw new ImageGenerationException('API key is required', ApiJson::MISSING_API_KEY, 401);
+        }
+
+        $logger = app(LlmExchangeLogger::class);
+        $ctx = LlmExchangeLogger::mergeContext([]);
+        $maxAttempts = max(1, min(5, (int) config('tutor.image_generation.http_max_attempts', 2)));
+        $executor = app(ModelRegistryHttpExecutor::class);
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $logCid = (string) Str::ulid();
+            $expandedBody = ModelRegistryTemplate::expandRequestFormat($entry['request_format'], $vars);
+            $logger->record(
+                'sent',
+                $logCid,
+                $ctx['user_id'],
+                'image_generation',
+                array_merge($expandedBody, ['_registry' => true, '_active_image' => $registry->activeKey('image')]),
+                '/v1/images/generations',
+                null,
+                $maxAttempts > 1 ? ['attempt' => $attempt, 'maxAttempts' => $maxAttempts, 'via' => 'model_registry'] : ['via' => 'model_registry'],
+                'image',
+            );
+
+            try {
+                $result = $executor->execute($entry, $vars);
+            } catch (ModelRegistryException $e) {
+                $logger->record(
+                    'received',
+                    $logCid,
+                    $ctx['user_id'],
+                    'image_generation',
+                    ['error' => $e->getMessage(), 'registry' => true],
+                    '/v1/images/generations',
+                    self::parseRegistryHttpFailureStatus($e),
+                    array_merge(
+                        ['registry_error' => true],
+                        $maxAttempts > 1 ? ['attempt' => $attempt, 'maxAttempts' => $maxAttempts] : [],
+                    ),
+                    'image',
+                );
+                $status = self::parseRegistryHttpFailureStatus($e);
+                if ($attempt < $maxAttempts && self::isRetryableRegistryHttpStatus($status)) {
+                    usleep((int) (400_000 * $attempt));
+
+                    continue;
+                }
+                throw self::mapModelRegistryExceptionToImageException($e, $status);
+            }
+
+            $json = $result->json ?? [];
+            $receivedPayload = $json !== []
+                ? self::redactImageResponseForLog($json)
+                : ['_empty_json' => true, 'raw_length' => strlen($result->rawBody)];
+            $logger->record(
+                'received',
+                $logCid,
+                $ctx['user_id'],
+                'image_generation',
+                $receivedPayload,
+                '/v1/images/generations',
+                $result->status,
+                $maxAttempts > 1 ? ['attempt' => $attempt, 'maxAttempts' => $maxAttempts, 'via' => 'model_registry'] : ['via' => 'model_registry'],
+                'image',
+            );
+
+            return $this->decodeSuccessfulImageResponse($json);
+        }
+
+        throw new ImageGenerationException(
+            'Image provider request failed after retries (model registry)',
+            ApiJson::UPSTREAM_ERROR,
+            502,
+        );
+    }
+
+    private static function parseRegistryHttpFailureStatus(ModelRegistryException $e): ?int
+    {
+        if (preg_match('/Model registry HTTP request failed \\((\\d+)\\):/', $e->getMessage(), $m) === 1) {
+            return (int) $m[1];
+        }
+
+        return null;
+    }
+
+    private static function isRetryableRegistryHttpStatus(?int $status): bool
+    {
+        if ($status === null || $status === 0) {
+            return true;
+        }
+
+        return in_array($status, [408, 429, 502, 503, 504], true);
+    }
+
+    /**
+     * @throws ImageGenerationException
+     */
+    private static function mapModelRegistryExceptionToImageException(ModelRegistryException $e, ?int $httpStatus): ImageGenerationException
+    {
+        $msg = $e->getMessage();
+        $lower = strtolower($msg);
+
+        if (str_contains($lower, 'missing template variable')) {
+            return new ImageGenerationException($msg, ApiJson::INVALID_REQUEST, 400);
+        }
+        if (str_contains($lower, 'invalid model registry provider entry')) {
+            return new ImageGenerationException($msg, ApiJson::INVALID_REQUEST, 400);
+        }
+        if ($httpStatus === 401) {
+            return new ImageGenerationException('Invalid or missing API key', ApiJson::MISSING_API_KEY, 401);
+        }
+        if (str_contains($lower, 'content_policy')
+            || str_contains($lower, 'safety system')) {
+            return new ImageGenerationException($msg, ApiJson::CONTENT_SENSITIVE, 422);
+        }
+        if ($httpStatus !== null && $httpStatus >= 500) {
+            return new ImageGenerationException($msg, ApiJson::UPSTREAM_ERROR, 502);
+        }
+
+        return new ImageGenerationException($msg, ApiJson::GENERATION_FAILED, 422);
+    }
+
+    /**
      * @param  array<string, mixed>  $json
      * @return array{binary: string, mime: string, revisedPrompt: ?string}
      *
@@ -277,10 +465,6 @@ final class OpenAiImageGenerator
     }
 
     /**
-     * @param  array<string, mixed>  $json
-     * @return array<string, mixed>
-     */
-    /**
      * When the upstream is not OpenAI-shaped JSON (wrong URL, Imagen/Vertex, HTML error page, empty body).
      *
      * @return array<string, mixed>
@@ -318,7 +502,8 @@ final class OpenAiImageGenerator
         } else {
             $parts[] = 'Body was empty — often a network block, proxy, wrong base URL, or TLS interception.';
         }
-        $parts[] = 'Confirm TUTOR_IMAGE_BASE_URL is https://api.openai.com/v1, config is not stale (php artisan config:clear), and the server can reach api.openai.com.';
+        $imgBase = rtrim((string) config('tutor.image_generation.base_url'), '/');
+        $parts[] = 'Confirm TUTOR_IMAGE_BASE_URL matches your provider (currently '.($imgBase !== '' ? $imgBase : '(empty)').'), run php artisan config:clear after .env changes, and that the server can reach that host.';
 
         return implode(' ', $parts);
     }

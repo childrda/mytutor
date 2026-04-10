@@ -28,7 +28,6 @@ class HomeController extends Controller
             'lessons' => $lessons,
             'languageOptions' => [
                 ['value' => 'en', 'label' => 'English'],
-                ['value' => 'zh-CN', 'label' => '中文（简体）'],
                 ['value' => 'es', 'label' => 'Español'],
                 ['value' => 'fr', 'label' => 'Français'],
                 ['value' => 'de', 'label' => 'Deutsch'],

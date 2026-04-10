@@ -4,7 +4,10 @@ namespace App\Providers;
 
 use App\Services\Ai\ModelRegistry;
 use App\Services\Ai\ModelRegistryHttpExecutor;
+use App\Services\Ai\ProviderRegistry;
+use App\Services\Ai\TutorActiveRegistrySelection;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
+use App\Services\Settings\ModelsJsonFileStore;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -15,7 +18,19 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(GeneratedMediaStorage::class, fn (): GeneratedMediaStorage => GeneratedMediaStorage::fromConfig());
-        $this->app->singleton(ModelRegistry::class, fn (): ModelRegistry => new ModelRegistry(config_path('model_registry.json')));
+        $this->app->singleton(TutorActiveRegistrySelection::class, fn (): TutorActiveRegistrySelection => new TutorActiveRegistrySelection);
+        $this->app->singleton(ModelsJsonFileStore::class, fn (): ModelsJsonFileStore => new ModelsJsonFileStore);
+        // Not a singleton: models.json is edited from Settings / deploys; queue workers are long-lived
+        // and must see new rows (e.g. active LLM id) without a manual worker restart.
+        $this->app->bind(ModelRegistry::class, function ($app): ModelRegistry {
+            $p = config('tutor.models_json_path');
+
+            return new ModelRegistry(
+                is_string($p) && $p !== '' ? $p : config_path('models.json'),
+                $app->make(ProviderRegistry::class),
+            );
+        });
+        $this->app->singleton(ProviderRegistry::class, fn (): ProviderRegistry => new ProviderRegistry(config_path('providers.json')));
         $this->app->singleton(ModelRegistryHttpExecutor::class, fn (): ModelRegistryHttpExecutor => new ModelRegistryHttpExecutor);
     }
 

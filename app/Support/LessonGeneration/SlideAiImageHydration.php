@@ -2,6 +2,7 @@
 
 namespace App\Support\LessonGeneration;
 
+use App\Services\Ai\ModelRegistry;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
 use App\Services\MediaGeneration\ImageGenerationException;
 use App\Services\MediaGeneration\OpenAiImageGenerator;
@@ -21,7 +22,9 @@ final class SlideAiImageHydration
      */
     public static function hydrateScenes(array $scenes, string $requirement, string $language): array
     {
-        if ((string) config('tutor.image_generation.api_key') === '') {
+        $legacyImageKey = (string) config('tutor.image_generation.api_key') !== '';
+        $registryImage = app(ModelRegistry::class)->hasActive('image');
+        if (! $legacyImageKey && ! $registryImage) {
             return ['scenes' => $scenes, 'failures' => []];
         }
 

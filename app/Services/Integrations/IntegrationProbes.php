@@ -8,6 +8,7 @@ use Throwable;
 
 /**
  * Lightweight HTTP probes for Settings → Verify (Phase 4.6).
+ * Chat/completions fallback uses {@see LlmClient::verifyChatCompletionsPing} with registry disabled so the probe uses only the supplied base URL.
  */
 final class IntegrationProbes
 {
@@ -26,6 +27,12 @@ final class IntegrationProbes
         if ($apiKey === '') {
             return ['ok' => false, 'error' => 'Empty API key'];
         }
+        if ($baseUrl === '') {
+            return [
+                'ok' => false,
+                'error' => 'Missing API base URL. For image providers like nano-banana, set TUTOR_IMAGE_BASE_URL or TUTOR_NANO_BANANA_IMAGE_BASE_URL (OpenAI-compatible root, usually with /v1).',
+            ];
+        }
 
         try {
             $models = Http::withToken($apiKey)
@@ -43,28 +50,24 @@ final class IntegrationProbes
 
         $model = (string) config('tutor.default_chat.model', 'gpt-4o-mini');
 
-        try {
-            $chat = Http::withToken($apiKey)
-                ->acceptJson()
-                ->timeout($timeout)
-                ->connectTimeout(min(10.0, $timeout))
-                ->post($baseUrl.'/chat/completions', array_merge([
-                    'model' => $model,
-                    'messages' => [['role' => 'user', 'content' => 'ping']],
-                ], LlmClient::completionLimitPayload(1)));
+        $chat = LlmClient::verifyChatCompletionsPing($baseUrl, $apiKey, $model, $timeout, false);
+        if ($chat['ok']) {
+            return ['ok' => true, 'probe' => 'POST /v1/chat/completions'];
+        }
 
-            if ($chat->successful()) {
-                return ['ok' => true, 'probe' => 'POST /v1/chat/completions'];
-            }
-
+        if (isset($chat['body']) && is_string($chat['body'])) {
             return [
                 'ok' => false,
-                'status' => $chat->status(),
-                'body' => self::truncateBody($chat->body()),
+                'status' => $chat['status'] ?? null,
+                'body' => self::truncateBody($chat['body']),
             ];
-        } catch (Throwable $e) {
-            return ['ok' => false, 'error' => $e->getMessage()];
         }
+
+        return [
+            'ok' => false,
+            'status' => $chat['status'] ?? null,
+            'error' => $chat['error'] ?? 'Chat probe failed',
+        ];
     }
 
     /**

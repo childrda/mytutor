@@ -17,7 +17,6 @@ class QuizGradeController extends Controller
         $userAnswer = (string) $request->input('userAnswer', '');
         $points = (float) $request->input('points', 0);
         $commentPrompt = $request->input('commentPrompt');
-        $language = (string) $request->input('language', 'en');
 
         if ($question === '' || $userAnswer === '') {
             return ApiJson::error(
@@ -39,19 +38,12 @@ class QuizGradeController extends Controller
             return ApiJson::error(ApiJson::MISSING_API_KEY, 401, 'LLM API key is required');
         }
 
-        $isZh = $language === 'zh-CN';
         $p = (int) round($points);
-        $system = $isZh
-            ? "你是一位专业的教育评估专家。必须以 JSON 格式回复（不要包含其他内容）：\n{\"score\": <0到{$p}的整数>, \"comment\": \"<一两句评语>\"}"
-            : "You are a professional educational assessor. Reply in JSON only:\n{\"score\": <integer from 0 to {$p}>, \"comment\": \"<brief feedback>\"}";
+        $system = "You are a professional educational assessor. Reply in JSON only:\n{\"score\": <integer from 0 to {$p}>, \"comment\": \"<brief feedback>\"}";
 
-        $user = $isZh
-            ? "题目：{$question}\n满分：{$p}分\n"
-                .(is_string($commentPrompt) && $commentPrompt !== '' ? "评分要点：{$commentPrompt}\n" : '')
-                ."学生答案：{$userAnswer}"
-            : "Question: {$question}\nFull marks: {$p} points\n"
-                .(is_string($commentPrompt) && $commentPrompt !== '' ? "Grading guidance: {$commentPrompt}\n" : '')
-                ."Student answer: {$userAnswer}";
+        $user = "Question: {$question}\nFull marks: {$p} points\n"
+            .(is_string($commentPrompt) && $commentPrompt !== '' ? "Grading guidance: {$commentPrompt}\n" : '')
+            ."Student answer: {$userAnswer}";
 
         try {
             $text = trim(LlmClient::chat($baseUrl, $apiKey, $model, [

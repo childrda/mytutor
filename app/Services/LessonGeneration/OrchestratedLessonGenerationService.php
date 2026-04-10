@@ -7,6 +7,8 @@ use App\Models\LessonGenerationJob;
 use App\Services\Ai\LlmClient;
 use App\Services\Ai\LlmExchangeLogger;
 use App\Services\Ai\LlmLogContext;
+use App\Services\Ai\ModelRegistry;
+use App\Services\Ai\ModelRegistryTemplate;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
 use App\Services\MediaGeneration\ImageGenerationException;
 use App\Services\MediaGeneration\OpenAiImageGenerator;
@@ -54,11 +56,12 @@ final class OrchestratedLessonGenerationService
         $pdfExcerpt = $pdf !== '' ? mb_substr($pdf, 0, 12000) : '';
         $pdfPageImages = $this->pdfPageImagesFromRequest(is_array($req) ? $req : null);
         $wantsAiSlideImages = is_array($req) && filter_var($req['enableImageGeneration'] ?? false, FILTER_VALIDATE_BOOL);
-        $imageKeyOk = (string) config('tutor.image_generation.api_key') !== '';
+        $imageKeyOk = (string) config('tutor.image_generation.api_key') !== ''
+            || app(ModelRegistry::class)->hasActive('image');
         // No PDF: gen_img placeholders are resolved when "Image generation" is on.
         // SlideAiImageHydration replaces broken http(s) slide URLs (Commons "No_image_available", example.com, etc.)
-        // and unfilled pdf_page refs when Image generation + image API key are set — not only for PDF-backed lessons,
-        // so no-PDF runs are not stuck on Wikipedia sentinel thumbnails.
+        // and unfilled pdf_page refs when Image generation + a resolvable image key (legacy env chain or active
+        // models.json image row) — not only for PDF-backed lessons, so no-PDF runs are not stuck on Wikipedia sentinel thumbnails.
         $runAiSlideHydration = $imageKeyOk && $wantsAiSlideImages;
 
         $baseUrl = (string) config('tutor.default_chat.base_url');
@@ -1133,7 +1136,9 @@ final class OrchestratedLessonGenerationService
      */
     private function chatCompletionPool(string $baseUrl, string $apiKey, string $model, array $requests): array
     {
-        $url = rtrim($baseUrl, '/').'/chat/completions';
+        $resolved = LlmClient::openAiRegistryChatEndpointAndHeaders($baseUrl, $apiKey, $model, false);
+        $url = $resolved['url'] ?? rtrim($baseUrl, '/').'/chat/completions';
+        $registryHeaders = $resolved['headers'] ?? null;
         $logger = app(LlmExchangeLogger::class);
         $log = $logger->enabled();
         $ctx = LlmExchangeLogger::mergeContext([]);
@@ -1149,17 +1154,19 @@ final class OrchestratedLessonGenerationService
             }
         }
 
-        $responses = Http::pool(function (Pool $pool) use ($url, $apiKey, $model, $requests) {
+        $responses = Http::pool(function (Pool $pool) use ($url, $apiKey, $model, $requests, $registryHeaders) {
             foreach ($requests as $req) {
-                $pool->as($req['key'])
-                    ->withToken($apiKey, 'Bearer')
-                    ->acceptJson()
-                    ->timeout(300)
-                    ->post($url, array_merge([
-                        'model' => $model,
-                        'messages' => $req['messages'],
-                        'temperature' => $req['temperature'],
-                    ], LlmClient::completionLimitPayload($req['max'])));
+                $pending = $pool->as($req['key'])->timeout(300);
+                if ($registryHeaders !== null) {
+                    $pending = $pending->withHeaders($registryHeaders);
+                } else {
+                    $pending = $pending->withToken($apiKey, 'Bearer')->acceptJson();
+                }
+                $pending->post($url, array_merge([
+                    'model' => $model,
+                    'messages' => $req['messages'],
+                    'temperature' => $req['temperature'],
+                ], LlmClient::completionLimitPayload($req['max'])));
             }
         });
 
@@ -1837,8 +1844,25 @@ final class OrchestratedLessonGenerationService
             default => null,
         };
         $override = is_string($key) && trim($key) !== '' ? trim($key) : null;
+        if ($override !== null) {
+            return $override;
+        }
 
-        return $override ?? (string) config('tutor.default_chat.model');
+        // When using models.json active LLM, honor the row's default vendor model ({model|…}) instead of
+        // tutor.default_chat.model — otherwise every step sends gpt-4o-mini while the UI shows openai-gpt-4o.
+        $registry = app(ModelRegistry::class);
+        if ($registry->hasActive('llm')) {
+            try {
+                $fromRow = ModelRegistryTemplate::defaultModelIdFromEntry($registry->activeEntry('llm'));
+                if (is_string($fromRow) && $fromRow !== '') {
+                    return $fromRow;
+                }
+            } catch (Throwable) {
+                // fall through to default_chat
+            }
+        }
+
+        return (string) config('tutor.default_chat.model');
     }
 
     private function maxTokensFor(string $step): int

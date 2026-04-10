@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\VideoGenerationJob;
+use App\Services\Ai\ModelRegistry;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
 use App\Services\MediaGeneration\MinimaxT2vVideoClient;
 use App\Services\MediaGeneration\VideoGenerationException;
@@ -61,6 +62,18 @@ class ProcessVideoGenerationJob implements ShouldQueue
 
         $baseUrl = rtrim((string) config('tutor.video_generation.base_url'), '/');
         $model = $modelOverride ?? (string) config('tutor.video_generation.model', 'MiniMax-Hailuo-2.3');
+
+        $registry = app(ModelRegistry::class);
+        if ($registry->hasActive('video') && $registry->activeKey('video') !== 'minimax-video') {
+            $record->update([
+                'status' => 'failed',
+                'error' => 'Server video generation uses the MiniMax T2V client only. '
+                    .'Set TUTOR_ACTIVE_VIDEO=minimax-video (or save it in Settings when env is unset), or clear the active video key. '
+                    .'Current active key: '.($registry->activeKey('video') ?? '').'.',
+            ]);
+
+            return;
+        }
 
         try {
             $task = $minimax->createTask($apiKey, $baseUrl, $model, $prompt, $duration, $resolution);

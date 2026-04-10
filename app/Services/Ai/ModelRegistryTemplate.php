@@ -3,7 +3,7 @@
 namespace App\Services\Ai;
 
 /**
- * Expands {@see config/model_registry.json} endpoint and request_format placeholders.
+ * Expands {@see config/models.json} endpoint and request_format placeholders.
  *
  * Syntax: {@name} required, {@name|default} optional with default. Defaults are coerced to int/float/bool when numeric/boolean-like.
  * A value that is exactly "{name}" or "{name|default}" may resolve to a non-scalar (e.g. messages array).
@@ -119,5 +119,33 @@ final class ModelRegistryTemplate
         }
 
         return $d;
+    }
+
+    /**
+     * Default vendor model id from {@code request_format.model} or embedded {@code {model|id}} in {@code endpoint}
+     * (e.g. Gemini URL). Used for catalog probes so OpenAI defaults are not sent to Google.
+     *
+     * @param  array<string, mixed>  $entry
+     */
+    public static function defaultModelIdFromEntry(array $entry): ?string
+    {
+        $rf = $entry['request_format'] ?? null;
+        if (is_array($rf) && isset($rf['model']) && is_string($rf['model'])) {
+            $t = trim($rf['model']);
+            if (preg_match('/^\{model\|([^}]+)\}$/', $t, $m)) {
+                $id = trim($m[1]);
+
+                return $id !== '' ? $id : null;
+            }
+        }
+
+        $ep = isset($entry['endpoint']) && is_string($entry['endpoint']) ? $entry['endpoint'] : '';
+        if ($ep !== '' && preg_match('/\{model\|([^}]+)\}/', $ep, $m)) {
+            $id = trim($m[1]);
+
+            return $id !== '' ? $id : null;
+        }
+
+        return null;
     }
 }

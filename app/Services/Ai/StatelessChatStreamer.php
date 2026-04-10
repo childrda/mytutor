@@ -19,6 +19,9 @@ use Throwable;
  * When multiple agent ids are provided, runs sequential completions: each agent
  * receives prior agents' outputs as assistant messages (multi-agent routing, Phase 3.2).
  *
+ * When {@see config('tutor.active.llm')} selects an OpenAI-compatible registry entry, the request URL and auth headers
+ * come from {@see LlmClient::openAiRegistryChatEndpointAndHeaders}; the JSON body is still built here (stream, messages, tools).
+ *
  * When {@see ChatToolRegistry} defines tools, they are sent to the model; tool calls are
  * executed allowlist-only, emitted as {@see ChatSseProtocol::TYPE_ACTION}, then a follow-up
  * completion is streamed with the same tools plus tool_choice=none (Phase 3.3).
@@ -49,7 +52,9 @@ class StatelessChatStreamer
         array $directorStateBaseline = [],
         array $llmLogContext = [],
     ): void {
-        $url = rtrim($baseUrl, '/').'/chat/completions';
+        $resolved = LlmClient::openAiRegistryChatEndpointAndHeaders($baseUrl, $apiKey, $model, true);
+        $url = $resolved['url'] ?? rtrim($baseUrl, '/').'/chat/completions';
+        $streamHeaders = $resolved['headers'] ?? null;
         $client = $this->client();
         $normalizedIds = TutorAgentRegistry::normalizeAgentIds($agentIds);
         $turnOutputs = [];
@@ -82,7 +87,7 @@ class StatelessChatStreamer
                 ];
             }
 
-            $turn = $this->runAgentOpenAiTurn($client, $url, $apiKey, $model, $openAiMessages, $messageId, $emit, $llmLogContext);
+            $turn = $this->runAgentOpenAiTurn($client, $url, $apiKey, $model, $openAiMessages, $messageId, $emit, $llmLogContext, $streamHeaders);
             if ($turn === false) {
                 return;
             }
@@ -142,6 +147,7 @@ class StatelessChatStreamer
         string $messageId,
         Closure $emit,
         array $llmLogContext = [],
+        ?array $resolvedRequestHeaders = null,
     ): array|false {
         $logger = app(LlmExchangeLogger::class);
         $ctx = LlmExchangeLogger::mergeContext($llmLogContext);
@@ -158,6 +164,8 @@ class StatelessChatStreamer
             $payload['tool_choice'] = 'auto';
         }
 
+        $requestHeaders = $resolvedRequestHeaders ?? $this->requestHeaders($apiKey);
+
         $cidPrimary = (string) Str::ulid();
         if ($logger->enabled()) {
             $logger->record('sent', $cidPrimary, $ctx['user_id'], $ctx['source'], $payload, '/chat/completions', null, [
@@ -171,7 +179,7 @@ class StatelessChatStreamer
             $response = $client->post($url, [
                 'json' => $payload,
                 'stream' => true,
-                'headers' => $this->requestHeaders($apiKey),
+                'headers' => $requestHeaders,
             ]);
         } catch (GuzzleException $e) {
             if ($logger->enabled()) {
@@ -311,7 +319,7 @@ class StatelessChatStreamer
             $response2 = $client->post($url, [
                 'json' => $followPayload,
                 'stream' => true,
-                'headers' => $this->requestHeaders($apiKey),
+                'headers' => $requestHeaders,
             ]);
         } catch (GuzzleException $e) {
             if ($logger->enabled()) {
