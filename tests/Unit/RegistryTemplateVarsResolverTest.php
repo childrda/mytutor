@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\Ai\RegistryTemplateVarsResolver;
+use App\Support\RuntimeEnv;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
@@ -41,8 +42,7 @@ class RegistryTemplateVarsResolverTest extends TestCase
             'model' => 'gpt-4o-mini',
         ]);
         $this->assertIsString($vars['api_key'] ?? null);
-        // Laravel reads .env at bootstrap; value matches whatever env exposes for OPENAI_API_KEY.
-        $this->assertSame((string) env('OPENAI_API_KEY'), $vars['api_key']);
+        $this->assertSame(RuntimeEnv::get('OPENAI_API_KEY'), $vars['api_key']);
     }
 
     #[Test]

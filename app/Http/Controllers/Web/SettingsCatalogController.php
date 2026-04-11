@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Web;
 
 use App\Http\Controllers\Controller;
+use App\Support\RuntimeEnv;
 use App\Models\TutorRegistryActive;
 use App\Services\Ai\LlmClient;
 use App\Services\Ai\ModelRegistry;
@@ -66,8 +67,8 @@ final class SettingsCatalogController extends Controller
                 if (! is_string($ek) || $ek === '' || $ek === '{env_key}') {
                     $envConfigured[$pid] = false;
                 } else {
-                    $v = env($ek);
-                    $envConfigured[$pid] = is_string($v) && trim($v) !== '';
+                    $v = RuntimeEnv::get($ek);
+                    $envConfigured[$pid] = $v !== '';
                 }
             }
         }

@@ -2,6 +2,8 @@
 
 namespace App\Services\Ai;
 
+use App\Support\RuntimeEnv;
+
 /**
  * Phase 3 — fills empty {@code api_key} / {@code base_url} template vars from {@see ProviderRegistry}
  * so runtime matches the two-layer catalog (provider env_key + default base URL) without duplicating logic in each caller.
@@ -46,7 +48,7 @@ final class RegistryTemplateVarsResolver
         if (self::isEmptyString($out['api_key'] ?? null) && self::isResolvableProviderEnvKey($p['env_key'] ?? null)) {
             /** @var string $envName */
             $envName = $p['env_key'];
-            $out['api_key'] = (string) env($envName);
+            $out['api_key'] = RuntimeEnv::get($envName);
         }
 
         if (self::isEmptyString($out['base_url'] ?? null)) {
