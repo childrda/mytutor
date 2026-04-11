@@ -1,6 +1,7 @@
 /**
  * POST /api/chat and parse Server-Sent Events (data: JSON lines).
- * Event payloads: { type, data } — e.g. thinking, agent_start, text_delta, agent_end, action, done, error.
+ * Event payloads: { type, data } — e.g. thinking, agent_start, text_delta,
+ * agent_end, action, done, error.
  *
  * @param {object} options
  * @param {string} options.url
@@ -8,6 +9,17 @@
  * @param {AbortSignal} [options.signal]
  * @param {(evt: { type: string, data?: unknown }) => void} options.onEvent
  */
+
+/**
+ * Read the XSRF-TOKEN cookie that Laravel sets on every page load.
+ * window.axios reads this automatically via withXSRFToken=true.
+ * Raw fetch() does not — it must be added manually.
+ */
+function getXsrfToken() {
+    const match = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
+}
+
 export async function streamTutorChat({ url, body, signal, onEvent }) {
     const res = await fetch(url, {
         method: 'POST',
@@ -15,6 +27,7 @@ export async function streamTutorChat({ url, body, signal, onEvent }) {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
             'X-Requested-With': 'XMLHttpRequest',
+            'X-XSRF-TOKEN': getXsrfToken(),
         },
         credentials: 'same-origin',
         body: JSON.stringify(body),
