@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\Ai\LlmClient;
+use App\Services\Ai\ModelRegistry;
 use App\Support\ApiJson;
 use App\Support\TutorDefaultChatRuntime;
 use Illuminate\Http\JsonResponse;
@@ -22,14 +23,16 @@ class ProjectTutorChatController extends Controller
             return ApiJson::error(ApiJson::MISSING_REQUIRED_FIELD, 400, 'messages are required');
         }
 
-        $apiKey = trim((string) $request->input('apiKey', ''));
-        if ($apiKey === '') {
-            $apiKey = TutorDefaultChatRuntime::apiKey();
-        }
-        $baseUrl = (string) ($request->input('baseUrl') ?: config('tutor.default_chat.base_url'));
-        $model = (string) ($request->input('model') ?: config('tutor.default_chat.model'));
+        $clientKey = trim((string) $request->input('apiKey', ''));
+        $bodyBase = $request->input('baseUrl');
+        $bodyModel = $request->input('model');
+        $bodyBaseStr = is_string($bodyBase) && trim($bodyBase) !== '' ? trim($bodyBase) : null;
+        $bodyModelStr = is_string($bodyModel) && trim($bodyModel) !== '' ? trim($bodyModel) : null;
+        $baseUrl = TutorDefaultChatRuntime::resolvedWireBaseUrl($bodyBaseStr);
+        $model = TutorDefaultChatRuntime::resolvedWireModel($bodyModelStr);
+        $apiKey = TutorDefaultChatRuntime::resolvedWireApiKey($clientKey);
 
-        if ($apiKey === '') {
+        if (trim($apiKey) === '' && ! app(ModelRegistry::class)->hasActive('llm')) {
             return ApiJson::error(ApiJson::MISSING_API_KEY, 401, 'API key is required');
         }
 

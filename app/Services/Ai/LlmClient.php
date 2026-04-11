@@ -42,6 +42,57 @@ final class LlmClient
     }
 
     /**
+     * Model id for the active registry {@code llm} row (classroom chat + lesson generation payloads).
+     *
+     * - Literal {@code request_format.model} (no braces): returned as-is.
+     * - {@code {model|default}}: prefers {@code config('tutor.default_chat.model')} (from {@code TUTOR_DEFAULT_LLM_MODEL}), then the template default.
+     * - {@code {model}} with no default: {@code null} so callers use {@code config('tutor.default_chat.model')}.
+     * - No active LLM or registry errors: {@code null}.
+     * - When {@code request_format.model} is absent or empty, uses {@see ModelRegistryTemplate::defaultModelIdFromEntry} (e.g. endpoint-only {@code {model|…}}).
+     */
+    public static function resolveActiveRegistryModel(): ?string
+    {
+        try {
+            $registry = app(ModelRegistry::class);
+            if (! $registry->hasActive('llm')) {
+                return null;
+            }
+            $entry = $registry->activeEntry('llm');
+        } catch (Throwable) {
+            return null;
+        }
+
+        $rf = $entry['request_format'] ?? null;
+        if (is_array($rf) && isset($rf['model']) && is_string($rf['model'])) {
+            $modelField = trim($rf['model']);
+            if ($modelField !== '') {
+                if (! str_contains($modelField, '{')) {
+                    return $modelField;
+                }
+                if (preg_match('/^\{model\|([^}]+)\}$/', $modelField, $m)) {
+                    $fromConfig = trim((string) config('tutor.default_chat.model', ''));
+                    if ($fromConfig !== '') {
+                        return $fromConfig;
+                    }
+                    $templateDefault = trim($m[1]);
+
+                    return $templateDefault !== '' ? $templateDefault : null;
+                }
+                if ($modelField === '{model}') {
+                    return null;
+                }
+            }
+        }
+
+        $fromRow = ModelRegistryTemplate::defaultModelIdFromEntry($entry);
+        if (is_string($fromRow) && $fromRow !== '' && ! str_contains($fromRow, '{')) {
+            return $fromRow;
+        }
+
+        return null;
+    }
+
+    /**
      * Optional log context (merged with {@see LlmLogContext} and Auth):
      * user_id?, source?, correlation_id?
      *

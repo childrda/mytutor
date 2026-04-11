@@ -8,7 +8,6 @@ use App\Services\Ai\LlmClient;
 use App\Services\Ai\LlmExchangeLogger;
 use App\Services\Ai\LlmLogContext;
 use App\Services\Ai\ModelRegistry;
-use App\Services\Ai\ModelRegistryTemplate;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
 use App\Services\MediaGeneration\ImageGenerationException;
 use App\Services\MediaGeneration\OpenAiImageGenerator;
@@ -1911,36 +1910,12 @@ final class OrchestratedLessonGenerationService
             return $override;
         }
 
-        // 2. Active registry LLM: concrete request_format.model (no placeholders) wins; {model|default}
-        //    defers to TUTOR_DEFAULT_LLM_MODEL when set so generic "openai" rows do not ignore env.
-        $registry = app(ModelRegistry::class);
-        if ($registry->hasActive('llm')) {
+        // 2. Active registry LLM: {@see LlmClient::resolveActiveRegistryModel()} (literal, {model|…}, {model}, endpoint hints).
+        if (app(ModelRegistry::class)->hasActive('llm')) {
             try {
-                $entry = $registry->activeEntry('llm');
-                $rf = $entry['request_format'] ?? null;
-
-                if (is_array($rf) && isset($rf['model']) && is_string($rf['model'])) {
-                    $modelField = trim($rf['model']);
-
-                    if ($modelField !== '' && ! str_contains($modelField, '{')) {
-                        return $modelField;
-                    }
-
-                    if (preg_match('/^\{model\|([^}]+)\}$/', $modelField, $m)) {
-                        $configModel = trim((string) config('tutor.default_chat.model', ''));
-                        if ($configModel !== '') {
-                            return $configModel;
-                        }
-                        $templateDefault = trim($m[1]);
-                        if ($templateDefault !== '') {
-                            return $templateDefault;
-                        }
-                    }
-                }
-
-                $fromRow = ModelRegistryTemplate::defaultModelIdFromEntry($entry);
-                if (is_string($fromRow) && $fromRow !== '' && ! str_contains($fromRow, '{')) {
-                    return $fromRow;
+                $resolved = LlmClient::resolveActiveRegistryModel();
+                if (is_string($resolved) && $resolved !== '') {
+                    return $resolved;
                 }
             } catch (Throwable) {
                 // Registry read failed — fall through to default_chat config.

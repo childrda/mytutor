@@ -4,6 +4,7 @@ namespace App\Services\Ai;
 
 use App\Support\Chat\ChatSseProtocol;
 use App\Support\Chat\TutorChatDirectorState;
+use App\Support\TutorDefaultChatRuntime;
 use Closure;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
@@ -53,8 +54,19 @@ class StatelessChatStreamer
         array $llmLogContext = [],
     ): void {
         $resolved = LlmClient::openAiRegistryChatEndpointAndHeaders($baseUrl, $apiKey, $model, true);
-        $url = $resolved['url'] ?? rtrim($baseUrl, '/').'/chat/completions';
-        $streamHeaders = $resolved['headers'] ?? null;
+        if ($resolved !== null) {
+            $url = $resolved['url'];
+            $streamHeaders = $resolved['headers'];
+            $effectiveApiKey = $apiKey;
+        } else {
+            $legacyBase = rtrim($baseUrl, '/');
+            if ($legacyBase === '') {
+                $legacyBase = rtrim((string) config('tutor.default_chat.base_url'), '/');
+            }
+            $url = $legacyBase !== '' ? $legacyBase.'/chat/completions' : '/chat/completions';
+            $streamHeaders = null;
+            $effectiveApiKey = trim($apiKey) !== '' ? $apiKey : TutorDefaultChatRuntime::apiKey();
+        }
         $client = $this->client();
         $normalizedIds = TutorAgentRegistry::normalizeAgentIds($agentIds);
         $turnOutputs = [];
@@ -87,7 +99,7 @@ class StatelessChatStreamer
                 ];
             }
 
-            $turn = $this->runAgentOpenAiTurn($client, $url, $apiKey, $model, $openAiMessages, $messageId, $emit, $llmLogContext, $streamHeaders);
+            $turn = $this->runAgentOpenAiTurn($client, $url, $effectiveApiKey, $model, $openAiMessages, $messageId, $emit, $llmLogContext, $streamHeaders);
             if ($turn === false) {
                 return;
             }

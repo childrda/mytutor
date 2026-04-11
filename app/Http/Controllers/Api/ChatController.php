@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Ai\LlmClient;
+use App\Services\Ai\ModelRegistry;
 use App\Services\Ai\StatelessChatStreamer;
 use App\Support\Chat\ChatSseProtocol;
 use App\Support\Chat\TutorChatDirectorState;
@@ -57,17 +59,18 @@ class ChatController extends Controller
             ], 400);
         }
 
-        $clientKey = is_string($body['apiKey'] ?? null) ? $body['apiKey'] : '';
-        $baseUrl = is_string($body['baseUrl'] ?? null) && $body['baseUrl'] !== ''
-            ? $body['baseUrl']
-            : (string) config('tutor.default_chat.base_url');
-        $model = is_string($body['model'] ?? null) && $body['model'] !== ''
-            ? $body['model']
-            : (string) config('tutor.default_chat.model');
-        $apiKey = $clientKey !== '' ? $clientKey : TutorDefaultChatRuntime::apiKey();
+        $clientKey = is_string($body['apiKey'] ?? null) ? trim((string) $body['apiKey']) : '';
+        $bodyBase = isset($body['baseUrl']) && is_string($body['baseUrl']) ? trim($body['baseUrl']) : '';
+        $bodyModel = isset($body['model']) && is_string($body['model']) ? trim($body['model']) : '';
+        $baseUrl = TutorDefaultChatRuntime::resolvedWireBaseUrl($bodyBase !== '' ? $bodyBase : null);
+        $model = $bodyModel !== ''
+            ? $bodyModel
+            : (LlmClient::resolveActiveRegistryModel() ?? (string) config('tutor.default_chat.model'));
+        $apiKey = TutorDefaultChatRuntime::resolvedWireApiKey($clientKey);
 
         $requiresKey = ($body['requiresApiKey'] ?? true) !== false;
-        if ($requiresKey && $apiKey === '') {
+        $registryLlm = app(ModelRegistry::class)->hasActive('llm');
+        if ($requiresKey && trim($apiKey) === '' && ! $registryLlm) {
             return response()->json([
                 'success' => false,
                 'errorCode' => 'MISSING_API_KEY',
