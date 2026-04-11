@@ -7,8 +7,9 @@ namespace App\Support;
  * {@see \Illuminate\Foundation\Application::configurationIsCached()} — in that mode Laravel does not
  * reload {@code .env} on each request and the {@see env()} helper returns {@code null} outside config files.
  *
- * Uses vlucas/phpdotenv {@see \Dotenv\Dotenv::safeLoad()} once per PHP process so {@code .env} stays the
- * source of truth without re-running {@code php artisan config:cache} after every key change.
+ * Uses vlucas/phpdotenv {@see \Dotenv\Dotenv::load()} once per PHP process (not {@see \Dotenv\Dotenv::safeLoad()},
+ * so values from {@code .env} replace empty placeholders in the process environment — needed when
+ * {@code OPENAI_API_KEY} is set to an empty string but the real key exists only in {@code .env}).
  */
 final class RuntimeEnv
 {
@@ -64,7 +65,7 @@ final class RuntimeEnv
             return;
         }
         try {
-            \Dotenv\Dotenv::createImmutable(base_path())->safeLoad();
+            \Dotenv\Dotenv::createImmutable(base_path())->load();
         } catch (\Throwable) {
             // Malformed .env — leave keys unset
         }
@@ -88,6 +89,6 @@ final class RuntimeEnv
 
     private static function isValidEnvName(string $name): bool
     {
-        return $name !== '' && (bool) preg_match('/\A[A-Z][A-Z0-9_]*\z/', $name);
+        return $name !== '' && (bool) preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/', $name);
     }
 }

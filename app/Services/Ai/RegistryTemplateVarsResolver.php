@@ -81,14 +81,49 @@ final class RegistryTemplateVarsResolver
      */
     private static function tutorConfigApiKeyFallback(string $capability): string
     {
-        $key = match ($capability) {
+        // Non-empty config wins (tests, explicit tutor.image_generation.api_key overrides).
+        $fromConfig = trim(match ($capability) {
             'image' => (string) config('tutor.image_generation.api_key', ''),
             'tts' => (string) config('tutor.tts_generation.api_key', ''),
             default => '',
-        };
-        $key = trim($key);
+        });
+        if ($fromConfig !== '') {
+            return $fromConfig;
+        }
 
-        return $key;
+        // Same env var chains as config/tutor.php, via RuntimeEnv when config is empty (e.g. config:cache
+        // baked nulls, or queue workers) so .env is still honored.
+        if ($capability === 'image') {
+            foreach ([
+                'TUTOR_IMAGE_API_KEY',
+                'TUTOR_IMAGE_AI_KEY',
+                'IMAGE_NANO_BANANA_API_KEY',
+                'tutor_image_api_key',
+                'tutor_image_ai_key',
+                'TUTOR_DEFAULT_LLM_API_KEY',
+                'OPENAI_API_KEY',
+            ] as $envName) {
+                $v = trim(RuntimeEnv::get($envName));
+                if ($v !== '') {
+                    return $v;
+                }
+            }
+        }
+        if ($capability === 'tts') {
+            foreach ([
+                'TUTOR_TTS_API_KEY',
+                'TTS_OPENAI_API_KEY',
+                'TUTOR_DEFAULT_LLM_API_KEY',
+                'OPENAI_API_KEY',
+            ] as $envName) {
+                $v = trim(RuntimeEnv::get($envName));
+                if ($v !== '') {
+                    return $v;
+                }
+            }
+        }
+
+        return '';
     }
 
     /**
