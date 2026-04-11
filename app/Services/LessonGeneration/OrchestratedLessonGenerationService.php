@@ -250,13 +250,39 @@ final class OrchestratedLessonGenerationService
             }
 
             if ($runAiSlideHydration) {
-                $job->update([
-                    'phase_detail' => ['message' => 'Generating slide illustrations (image API)', 'pipelineStep' => 'content'],
-                ]);
-                $hydrated = SlideAiImageHydration::hydrateScenes($scenes, $requirement, $language);
-                $scenes = $hydrated['scenes'];
-                foreach ($hydrated['failures'] as $row) {
-                    $imageIssues[] = array_merge($row, ['severity' => 'error']);
+                // Only run slide image hydration when something still needs work.
+                // resolveGenImgPlaceholders already handled gen_img_N; this pass covers failed
+                // gen_img retries, pdf_page:*, Wikimedia sentinels, etc. Without the guard (and
+                // without treating /storage/... as resolved in srcNeedsGeneration), images from
+                // Step A would be sent to the image API again.
+                if ($this->slidesNeedImageHydration($scenes)) {
+                    $job->update([
+                        'phase_detail' => ['message' => 'Generating slide illustrations (image API)', 'pipelineStep' => 'content'],
+                    ]);
+                    $hydrated = SlideAiImageHydration::hydrateScenes(
+                        $scenes,
+                        $requirement,
+                        $language,
+                        function (int $completed, int $planned) use ($job): void {
+                            if ($planned <= 0) {
+                                return;
+                            }
+                            $job->refresh();
+                            $progress = 60 + (int) floor(($completed / $planned) * 2);
+
+                            $job->update([
+                                'progress' => min(61, $progress),
+                                'phase_detail' => [
+                                    'message' => 'Generating slide illustrations ('.$completed.' / '.$planned.', image API)',
+                                    'pipelineStep' => 'content',
+                                ],
+                            ]);
+                        },
+                    );
+                    $scenes = $hydrated['scenes'];
+                    foreach ($hydrated['failures'] as $row) {
+                        $imageIssues[] = array_merge($row, ['severity' => 'error']);
+                    }
                 }
             }
 
@@ -982,6 +1008,42 @@ final class OrchestratedLessonGenerationService
         }
 
         return $n;
+    }
+
+    /**
+     * True when any slide image still needs generation or hydration.
+     * Uses {@see SlideAiImageHydration::srcNeedsGeneration()} so orchestration stays aligned with hydration.
+     */
+    private function slidesNeedImageHydration(array $scenes): bool
+    {
+        foreach ($scenes as $scene) {
+            if (($scene['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $content = $scene['content'] ?? null;
+            if (! is_array($content) || ($content['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $canvas = $content['canvas'] ?? null;
+            if (! is_array($canvas)) {
+                continue;
+            }
+            $elements = $canvas['elements'] ?? [];
+            if (! is_array($elements)) {
+                continue;
+            }
+            foreach ($elements as $el) {
+                if (! is_array($el) || ($el['type'] ?? '') !== 'image') {
+                    continue;
+                }
+                $src = trim((string) ($el['src'] ?? ''));
+                if (SlideAiImageHydration::srcNeedsGeneration($src)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1836,6 +1898,7 @@ final class OrchestratedLessonGenerationService
 
     private function modelFor(string $step): string
     {
+        // 1. Per-step env override always wins.
         $key = match ($step) {
             'roles' => config('tutor.lesson_generation.roles_model'),
             'outline' => config('tutor.lesson_generation.outline_model'),
@@ -1848,20 +1911,43 @@ final class OrchestratedLessonGenerationService
             return $override;
         }
 
-        // When using models.json active LLM, honor the row's default vendor model ({model|…}) instead of
-        // tutor.default_chat.model — otherwise every step sends gpt-4o-mini while the UI shows openai-gpt-4o.
+        // 2. Active registry LLM: concrete request_format.model (no placeholders) wins; {model|default}
+        //    defers to TUTOR_DEFAULT_LLM_MODEL when set so generic "openai" rows do not ignore env.
         $registry = app(ModelRegistry::class);
         if ($registry->hasActive('llm')) {
             try {
-                $fromRow = ModelRegistryTemplate::defaultModelIdFromEntry($registry->activeEntry('llm'));
-                if (is_string($fromRow) && $fromRow !== '') {
+                $entry = $registry->activeEntry('llm');
+                $rf = $entry['request_format'] ?? null;
+
+                if (is_array($rf) && isset($rf['model']) && is_string($rf['model'])) {
+                    $modelField = trim($rf['model']);
+
+                    if ($modelField !== '' && ! str_contains($modelField, '{')) {
+                        return $modelField;
+                    }
+
+                    if (preg_match('/^\{model\|([^}]+)\}$/', $modelField, $m)) {
+                        $configModel = trim((string) config('tutor.default_chat.model', ''));
+                        if ($configModel !== '') {
+                            return $configModel;
+                        }
+                        $templateDefault = trim($m[1]);
+                        if ($templateDefault !== '') {
+                            return $templateDefault;
+                        }
+                    }
+                }
+
+                $fromRow = ModelRegistryTemplate::defaultModelIdFromEntry($entry);
+                if (is_string($fromRow) && $fromRow !== '' && ! str_contains($fromRow, '{')) {
                     return $fromRow;
                 }
             } catch (Throwable) {
-                // fall through to default_chat
+                // Registry read failed — fall through to default_chat config.
             }
         }
 
+        // 3. Final fallback: TUTOR_DEFAULT_LLM_MODEL (or tutor.default_chat default).
         return (string) config('tutor.default_chat.model');
     }
 

@@ -21,7 +21,8 @@ class ProcessLessonGenerationJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $timeout = 600;
+    /** Long lessons: many LLM steps plus sequential slide image API calls (see tutor.lesson_generation.ai_slide_images_max). */
+    public int $timeout = 3600;
 
     public function __construct(
         public string $jobUlid,

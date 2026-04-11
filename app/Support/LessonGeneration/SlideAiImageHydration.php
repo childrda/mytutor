@@ -18,10 +18,15 @@ final class SlideAiImageHydration
 {
     /**
      * @param  list<array<string, mixed>>  $scenes
+     * @param  (callable(int $completed, int $planned): void)|null  $onImageProgress  Fired after each slide image API attempt completes (success or failure); $planned is capped by ai_slide_images_max.
      * @return array{scenes: list<array<string, mixed>>, failures: list<array{step: string, message: string, code: string, slideTitle?: string}>}
      */
-    public static function hydrateScenes(array $scenes, string $requirement, string $language): array
-    {
+    public static function hydrateScenes(
+        array $scenes,
+        string $requirement,
+        string $language,
+        ?callable $onImageProgress = null,
+    ): array {
         $legacyImageKey = (string) config('tutor.image_generation.api_key') !== '';
         $registryImage = app(ModelRegistry::class)->hasActive('image');
         if (! $legacyImageKey && ! $registryImage) {
@@ -29,11 +34,24 @@ final class SlideAiImageHydration
         }
 
         $max = max(1, min(32, (int) config('tutor.lesson_generation.ai_slide_images_max', 12)));
+        $planned = $onImageProgress !== null ? self::countPlannedSlideImages($scenes, $max) : 0;
+        if ($onImageProgress !== null) {
+            $onImageProgress(0, $planned);
+        }
+
         $generator = app(OpenAiImageGenerator::class);
         $storage = GeneratedMediaStorage::fromConfig();
         $used = 0;
         $stopAll = false;
         $failures = [];
+        $completedAttempts = 0;
+
+        $reportProgress = static function () use (&$completedAttempts, $planned, $onImageProgress): void {
+            if ($onImageProgress === null) {
+                return;
+            }
+            $onImageProgress($completedAttempts, $planned);
+        };
 
         foreach ($scenes as $si => $scene) {
             if ($stopAll) {
@@ -160,6 +178,9 @@ final class SlideAiImageHydration
                         'code' => 'UNEXPECTED',
                     ];
                 }
+
+                $completedAttempts++;
+                $reportProgress();
             }
 
             $canvas['elements'] = $elements;
@@ -203,7 +224,57 @@ final class SlideAiImageHydration
             return false;
         }
 
+        // Local storage path returned by Storage::disk('public')->url()
+        // e.g. /storage/generated/.../abc.png — already resolved; do not generate again.
+        if (str_starts_with($src, '/storage/')
+            || (str_starts_with($src, '/') && ! str_starts_with($src, '//'))) {
+            return false;
+        }
+
         return true;
+    }
+
+    /**
+     * How many slide images will receive an API attempt (same cap as {@see hydrateScenes}).
+     */
+    private static function countPlannedSlideImages(array $scenes, int $max): int
+    {
+        $n = 0;
+        foreach ($scenes as $scene) {
+            if ($n >= $max) {
+                break;
+            }
+            if (($scene['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $content = $scene['content'] ?? null;
+            if (! is_array($content) || ($content['type'] ?? '') !== 'slide') {
+                continue;
+            }
+            $canvas = $content['canvas'] ?? null;
+            if (! is_array($canvas)) {
+                continue;
+            }
+            $elements = $canvas['elements'] ?? null;
+            if (! is_array($elements)) {
+                continue;
+            }
+            foreach ($elements as $el) {
+                if ($n >= $max) {
+                    break 2;
+                }
+                if (! is_array($el) || ($el['type'] ?? '') !== 'image') {
+                    continue;
+                }
+                $src = isset($el['src']) && is_string($el['src']) ? trim($el['src']) : '';
+                if (! self::srcNeedsGeneration($src)) {
+                    continue;
+                }
+                $n++;
+            }
+        }
+
+        return $n;
     }
 
     private static function buildPrompt(string $requirement, string $language, string $slideTitle, string $alt): string
