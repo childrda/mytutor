@@ -2,8 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
 use App\Support\ApiJson;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
@@ -22,7 +24,7 @@ class GenerateImageTest extends TestCase
     {
         config(['tutor.image_generation.api_key' => 'sk-test']);
 
-        $response = $this->postJson('/api/generate/image', [
+        $response = $this->actingAs(User::factory()->create())->postJson('/api/generate/image', [
             'prompt' => '   ',
             'requiresApiKey' => false,
         ]);
@@ -39,7 +41,7 @@ class GenerateImageTest extends TestCase
             'tutor.default_chat.api_key' => '',
         ]);
 
-        $response = $this->postJson('/api/generate/image', [
+        $response = $this->actingAs(User::factory()->create())->postJson('/api/generate/image', [
             'prompt' => 'A red apple',
             'requiresApiKey' => true,
         ]);
@@ -56,7 +58,7 @@ class GenerateImageTest extends TestCase
             'tutor.image_generation.base_url' => 'https://api.openai.com/v1',
         ]);
 
-        Http::fake(function (\Illuminate\Http\Client\Request $request) {
+        Http::fake(function (Request $request) {
             if (! str_contains($request->url(), 'api.openai.com/v1/images/generations')) {
                 return Http::response('not found', 404);
             }
@@ -78,7 +80,7 @@ class GenerateImageTest extends TestCase
             ]);
         $this->app->instance(GeneratedMediaStorage::class, $mockStorage);
 
-        $response = $this->postJson('/api/generate/image', [
+        $response = $this->actingAs(User::factory()->create())->postJson('/api/generate/image', [
             'prompt' => 'A simple test image',
             'requiresApiKey' => false,
         ]);

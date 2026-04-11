@@ -23,14 +23,9 @@ class ProjectTutorChatController extends Controller
             return ApiJson::error(ApiJson::MISSING_REQUIRED_FIELD, 400, 'messages are required');
         }
 
-        $clientKey = trim((string) $request->input('apiKey', ''));
-        $bodyBase = $request->input('baseUrl');
-        $bodyModel = $request->input('model');
-        $bodyBaseStr = is_string($bodyBase) && trim($bodyBase) !== '' ? trim($bodyBase) : null;
-        $bodyModelStr = is_string($bodyModel) && trim($bodyModel) !== '' ? trim($bodyModel) : null;
-        $baseUrl = TutorDefaultChatRuntime::resolvedWireBaseUrl($bodyBaseStr);
-        $model = TutorDefaultChatRuntime::resolvedWireModel($bodyModelStr);
-        $apiKey = TutorDefaultChatRuntime::resolvedWireApiKey($clientKey);
+        $baseUrl = TutorDefaultChatRuntime::resolvedWireBaseUrl(null);
+        $model = TutorDefaultChatRuntime::resolvedWireModel(null);
+        $apiKey = TutorDefaultChatRuntime::resolvedWireApiKey('');
 
         if (trim($apiKey) === '' && ! app(ModelRegistry::class)->hasActive('llm')) {
             return ApiJson::error(ApiJson::MISSING_API_KEY, 401, 'API key is required');

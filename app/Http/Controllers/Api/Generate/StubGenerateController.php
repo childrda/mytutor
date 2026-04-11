@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Generate;
 
 use App\Http\Controllers\Controller;
+use App\Services\Ai\ModelRegistry;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
 use App\Services\MediaGeneration\ImageGenerationException;
 use App\Services\MediaGeneration\OpenAiImageGenerator;
@@ -24,18 +25,16 @@ class StubGenerateController extends Controller
         $prompt = isset($body['prompt']) && is_string($body['prompt']) ? $body['prompt'] : '';
         $size = isset($body['size']) && is_string($body['size']) ? trim($body['size']) : null;
         $model = isset($body['model']) && is_string($body['model']) ? trim($body['model']) : null;
-        $clientKey = isset($body['apiKey']) && is_string($body['apiKey']) ? trim($body['apiKey']) : '';
 
         $requiresKey = ($body['requiresApiKey'] ?? true) !== false;
         $serverKey = (string) config('tutor.image_generation.api_key');
-        if ($requiresKey && $clientKey === '' && $serverKey === '') {
+        $registryImage = app(ModelRegistry::class)->hasActive('image');
+        if ($requiresKey && $serverKey === '' && ! $registryImage) {
             return ApiJson::error(ApiJson::MISSING_API_KEY, 401, 'API key is required');
         }
 
-        $overrideKey = $clientKey !== '' ? $clientKey : null;
-
         try {
-            $out = $generator->generate($prompt, $size, $model, $overrideKey);
+            $out = $generator->generate($prompt, $size, $model, null);
         } catch (ImageGenerationException $e) {
             return ApiJson::error($e->errorCode, $e->httpStatus, $e->getMessage());
         } catch (Throwable $e) {
@@ -71,15 +70,13 @@ class StubGenerateController extends Controller
         $speedRaw = $body['speed'] ?? null;
         $speed = is_numeric($speedRaw) ? (float) $speedRaw : 1.0;
         $speed = round(max(0.25, min(4.0, $speed)), 3);
-        $clientKey = isset($body['apiKey']) && is_string($body['apiKey']) ? trim($body['apiKey']) : '';
 
         $requiresKey = ($body['requiresApiKey'] ?? true) !== false;
         $serverKey = (string) config('tutor.tts_generation.api_key');
-        if ($requiresKey && $clientKey === '' && $serverKey === '') {
+        $registryTts = app(ModelRegistry::class)->hasActive('tts');
+        if ($requiresKey && $serverKey === '' && ! $registryTts) {
             return ApiJson::error(ApiJson::MISSING_API_KEY, 401, 'API key is required');
         }
-
-        $overrideKey = $clientKey !== '' ? $clientKey : null;
 
         $voiceKey = $voice !== null && $voice !== '' ? strtolower($voice) : (string) config('tutor.tts_generation.voice', 'alloy');
         $modelKey = $model !== null && $model !== '' ? $model : (string) config('tutor.tts_generation.model', 'tts-1');
@@ -94,8 +91,8 @@ class StubGenerateController extends Controller
         ], JSON_UNESCAPED_UNICODE);
 
         try {
-            $stored = $mediaStorage->getOrStoreFingerprint('tts-cache', $fingerprint, $formatKey, function () use ($generator, $text, $voice, $model, $format, $overrideKey, $speed) {
-                $out = $generator->generate($text, $voice, $model, $format, $overrideKey, $speed);
+            $stored = $mediaStorage->getOrStoreFingerprint('tts-cache', $fingerprint, $formatKey, function () use ($generator, $text, $voice, $model, $format, $speed) {
+                $out = $generator->generate($text, $voice, $model, $format, null, $speed);
 
                 return $out['binary'];
             });

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -24,7 +25,7 @@ class VerifyImageVideoProbeTest extends TestCase
             'api.openai.com/v1/models*' => Http::response(['data' => [['id' => 'gpt-4o-mini']]], 200),
         ]);
 
-        $this->postJson('/api/verify/image-provider', [])
+        $this->actingAs(User::factory()->create())->postJson('/api/verify/image-provider', [])
             ->assertOk()
             ->assertJsonPath('ok', true)
             ->assertJsonPath('probe', 'GET /v1/models');
@@ -65,7 +66,7 @@ class VerifyImageVideoProbeTest extends TestCase
             ], 200),
         ]);
 
-        $this->postJson('/api/verify/video-provider', [])
+        $this->actingAs(User::factory()->create())->postJson('/api/verify/video-provider', [])
             ->assertOk()
             ->assertJsonPath('ok', true)
             ->assertJsonPath('probe', 'POST /v1/video_generation (parameter check)');
@@ -85,7 +86,7 @@ class VerifyImageVideoProbeTest extends TestCase
             ], 200),
         ]);
 
-        $this->postJson('/api/verify/video-provider', [])
+        $this->actingAs(User::factory()->create())->postJson('/api/verify/video-provider', [])
             ->assertOk()
             ->assertJsonPath('ok', false);
     }
@@ -101,7 +102,7 @@ class VerifyImageVideoProbeTest extends TestCase
 
         Http::fake([
             'api.openai.com/v1/chat/completions' => Http::response([
-                'choices' => [['message' => ['content' => '{"actions":[]}' ]]],
+                'choices' => [['message' => ['content' => '{"actions":[]}']]],
             ], 200),
         ]);
 
@@ -111,10 +112,12 @@ class VerifyImageVideoProbeTest extends TestCase
             'requiresApiKey' => false,
         ];
 
+        $user = User::factory()->create();
+
         try {
-            $this->postJson('/api/generate/scene-actions', $payload)->assertOk();
-            $this->postJson('/api/generate/scene-actions', $payload)->assertOk();
-            $this->postJson('/api/generate/scene-actions', $payload)->assertStatus(429);
+            $this->actingAs($user)->postJson('/api/generate/scene-actions', $payload)->assertOk();
+            $this->actingAs($user)->postJson('/api/generate/scene-actions', $payload)->assertOk();
+            $this->actingAs($user)->postJson('/api/generate/scene-actions', $payload)->assertStatus(429);
         } finally {
             Cache::flush();
         }

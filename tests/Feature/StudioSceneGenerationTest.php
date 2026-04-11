@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use App\Support\ApiJson;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -17,7 +18,7 @@ class StudioSceneGenerationTest extends TestCase
     {
         config(['tutor.default_chat.api_key' => '']);
 
-        $this->postJson('/api/generate/scene-actions', [
+        $this->actingAs(User::factory()->create())->postJson('/api/generate/scene-actions', [
             'sceneTitle' => 'Intro',
             'instruction' => 'Suggest edits',
             'requiresApiKey' => true,
@@ -44,7 +45,7 @@ class StudioSceneGenerationTest extends TestCase
             ], 200),
         ]);
 
-        $this->postJson('/api/generate/scene-actions', [
+        $this->actingAs(User::factory()->create())->postJson('/api/generate/scene-actions', [
             'sceneTitle' => 'Intro',
             'instruction' => 'Suggest next steps',
             'requiresApiKey' => false,
@@ -60,7 +61,7 @@ class StudioSceneGenerationTest extends TestCase
     {
         config(['tutor.default_chat.api_key' => 'sk-test']);
 
-        $this->postJson('/api/generate/scene-content', [
+        $this->actingAs(User::factory()->create())->postJson('/api/generate/scene-content', [
             'instruction' => 'Write body',
             'requiresApiKey' => false,
         ])
@@ -113,7 +114,7 @@ class StudioSceneGenerationTest extends TestCase
             ], 200),
         ]);
 
-        $response = $this->postJson('/api/generate/scene-outlines-stream', [
+        $response = $this->actingAs(User::factory()->create())->postJson('/api/generate/scene-outlines-stream', [
             'instruction' => 'Outline the lesson',
             'requiresApiKey' => false,
         ]);

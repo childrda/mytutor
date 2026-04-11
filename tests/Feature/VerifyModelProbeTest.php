@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
@@ -19,7 +20,7 @@ class VerifyModelProbeTest extends TestCase
             ], 200),
         ]);
 
-        $this->postJson('/api/verify/model', [
+        $this->actingAs(User::factory()->create())->postJson('/api/verify/model', [
             'baseUrl' => 'https://api.custom/v1',
             'apiKey' => 'sk-ui',
             'model' => 'gpt-4o-mini',
@@ -42,7 +43,7 @@ class VerifyModelProbeTest extends TestCase
             ], 200),
         ]);
 
-        $this->postJson('/api/verify/model', [
+        $this->actingAs(User::factory()->create())->postJson('/api/verify/model', [
             'baseUrl' => 'https://api.test/v1',
             'apiKey' => 'sk-reg',
             'model' => 'gpt-4o-mini',

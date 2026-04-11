@@ -380,6 +380,18 @@ return [
         'publish' => [
             'per_minute' => max(0, (int) env('TUTOR_PUBLISH_THROTTLE_PER_MINUTE', 30)),
         ],
+        'web_search' => [
+            'per_minute' => max(0, (int) env('TUTOR_WEB_SEARCH_THROTTLE_PER_MINUTE', 60)),
+        ],
+        'quiz_grade' => [
+            'per_minute' => max(0, (int) env('TUTOR_QUIZ_GRADE_THROTTLE_PER_MINUTE', 60)),
+        ],
+        'transcription' => [
+            'per_minute' => max(0, (int) env('TUTOR_TRANSCRIPTION_THROTTLE_PER_MINUTE', 30)),
+        ],
+        'project_tutor_chat' => [
+            'per_minute' => max(0, (int) env('TUTOR_PROJECT_TUTOR_CHAT_THROTTLE_PER_MINUTE', 60)),
+        ],
     ],
 
     /*

@@ -2,10 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use App\Models\VideoGenerationJob;
 use App\Services\MediaGeneration\GeneratedMediaStorage;
 use App\Support\ApiJson;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
@@ -26,7 +28,7 @@ class GenerateVideoTest extends TestCase
     {
         config(['tutor.video_generation.api_key' => 'mm-test']);
 
-        $response = $this->postJson('/api/generate/video', [
+        $response = $this->actingAs(User::factory()->create())->postJson('/api/generate/video', [
             'prompt' => '   ',
             'requiresApiKey' => false,
         ]);
@@ -40,7 +42,7 @@ class GenerateVideoTest extends TestCase
     {
         config(['tutor.video_generation.api_key' => '']);
 
-        $response = $this->postJson('/api/generate/video', [
+        $response = $this->actingAs(User::factory()->create())->postJson('/api/generate/video', [
             'prompt' => 'A short clip of waves',
             'requiresApiKey' => true,
         ]);
@@ -58,7 +60,7 @@ class GenerateVideoTest extends TestCase
             'tutor.video_generation.poll_interval_seconds' => 0,
         ]);
 
-        Http::fake(function (\Illuminate\Http\Client\Request $request) {
+        Http::fake(function (Request $request) {
             $url = $request->url();
 
             if (str_contains($url, '/v1/video_generation') && $request->method() === 'POST') {
@@ -103,7 +105,7 @@ class GenerateVideoTest extends TestCase
             ]);
         $this->app->instance(GeneratedMediaStorage::class, $mockStorage);
 
-        $response = $this->postJson('/api/generate/video', [
+        $response = $this->actingAs(User::factory()->create())->postJson('/api/generate/video', [
             'prompt' => 'Ocean waves at sunset',
             'requiresApiKey' => false,
         ]);
@@ -117,7 +119,7 @@ class GenerateVideoTest extends TestCase
         $jobId = $response->json('jobId');
         $this->assertNotEmpty($jobId);
 
-        $this->getJson('/api/generate/video/'.$jobId)
+        $this->actingAs(User::factory()->create())->getJson('/api/generate/video/'.$jobId)
             ->assertOk()
             ->assertJsonPath('status', 'completed')
             ->assertJsonPath('result.mime', 'video/mp4');
@@ -141,7 +143,7 @@ class GenerateVideoTest extends TestCase
 
         Http::fake();
 
-        $response = $this->postJson('/api/generate/video', [
+        $response = $this->actingAs(User::factory()->create())->postJson('/api/generate/video', [
             'prompt' => 'Ignored when deduped',
             'clientJobId' => 'client-a',
             'requiresApiKey' => false,
@@ -157,7 +159,7 @@ class GenerateVideoTest extends TestCase
     #[Test]
     public function show_returns_404_for_unknown_job(): void
     {
-        $this->getJson('/api/generate/video/01hz0v0000000000000000000')
+        $this->actingAs(User::factory()->create())->getJson('/api/generate/video/01hz0v0000000000000000000')
             ->assertStatus(404);
     }
 }

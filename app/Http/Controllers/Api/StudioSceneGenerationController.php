@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\Ai\LlmLogContext;
+use App\Services\Ai\ModelRegistry;
 use App\Services\StudioGeneration\StudioSceneGenerationService;
 use App\Support\ApiJson;
 use App\Support\Generate\StudioGenerationSseProtocol;
+use App\Support\TutorDefaultChatRuntime;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use JsonException;
@@ -191,17 +193,13 @@ class StudioSceneGenerationController extends Controller
     private function resolveLlmCredentials(Request $request): JsonResponse|array
     {
         $body = $request->all();
-        $clientKey = isset($body['apiKey']) && is_string($body['apiKey']) ? trim($body['apiKey']) : '';
-        $baseUrl = isset($body['baseUrl']) && is_string($body['baseUrl']) && $body['baseUrl'] !== ''
-            ? rtrim($body['baseUrl'], '/')
-            : rtrim((string) config('tutor.default_chat.base_url'), '/');
-        $model = isset($body['model']) && is_string($body['model']) && $body['model'] !== ''
-            ? trim($body['model'])
-            : (string) config('tutor.default_chat.model');
-        $apiKey = $clientKey !== '' ? $clientKey : (string) config('tutor.default_chat.api_key');
+        $baseUrl = TutorDefaultChatRuntime::resolvedWireBaseUrl(null);
+        $model = TutorDefaultChatRuntime::resolvedWireModel(null);
+        $apiKey = TutorDefaultChatRuntime::resolvedWireApiKey('');
 
         $requiresKey = ($body['requiresApiKey'] ?? true) !== false;
-        if ($requiresKey && $apiKey === '') {
+        $registryLlm = app(ModelRegistry::class)->hasActive('llm');
+        if ($requiresKey && trim($apiKey) === '' && ! $registryLlm) {
             return ApiJson::error(ApiJson::MISSING_API_KEY, 401, 'API key is required');
         }
 

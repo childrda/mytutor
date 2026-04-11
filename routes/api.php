@@ -25,14 +25,24 @@ Route::get('/integrations', IntegrationController::class)->name('api.integration
 Route::post('/chat', ChatController::class)
     ->middleware(['auth:sanctum', 'throttle.tutor:chat'])
     ->name('api.chat');
-Route::post('/web-search', WebSearchController::class)->name('api.web-search');
-Route::post('/quiz-grade', QuizGradeController::class)->name('api.quiz-grade');
-Route::post('/proxy-media', ProxyMediaController::class)->name('api.proxy-media');
+Route::post('/web-search', WebSearchController::class)
+    ->middleware(['auth:sanctum', 'throttle.tutor:web_search'])
+    ->name('api.web-search');
+Route::post('/quiz-grade', QuizGradeController::class)
+    ->middleware(['auth:sanctum', 'throttle.tutor:quiz_grade'])
+    ->name('api.quiz-grade');
+Route::post('/proxy-media', ProxyMediaController::class)
+    ->middleware(['auth:sanctum'])
+    ->name('api.proxy-media');
 Route::post('/parse-pdf', ParsePdfController::class)
     ->middleware(['auth:sanctum', 'throttle.tutor:parse_pdf'])
     ->name('api.parse-pdf');
-Route::post('/transcription', TranscriptionController::class)->name('api.transcription');
-Route::post('/project-tutor/chat', ProjectTutorChatController::class)->name('api.project-tutor.chat');
+Route::post('/transcription', TranscriptionController::class)
+    ->middleware(['auth:sanctum', 'throttle.tutor:transcription'])
+    ->name('api.transcription');
+Route::post('/project-tutor/chat', ProjectTutorChatController::class)
+    ->middleware(['auth:sanctum', 'throttle.tutor:project_tutor_chat'])
+    ->name('api.project-tutor.chat');
 
 Route::post('/published-lessons', [PublishedLessonController::class, 'store'])
     ->middleware(['auth:sanctum', 'throttle.tutor:publish'])
@@ -53,7 +63,7 @@ Route::middleware(['auth:sanctum', 'throttle.generate'])->group(function (): voi
     Route::post('/generate/tts', [StubGenerateController::class, 'tts']);
 });
 
-Route::middleware(['throttle.generate'])->prefix('generate')->group(function (): void {
+Route::middleware(['auth:sanctum', 'throttle.generate'])->prefix('generate')->group(function (): void {
     Route::post('/image', [StubGenerateController::class, 'image']);
     Route::post('/video', [VideoGenerationController::class, 'store']);
     Route::get('/video/{jobId}', [VideoGenerationController::class, 'show']);
@@ -63,11 +73,12 @@ Route::middleware(['throttle.generate'])->prefix('generate')->group(function ():
     Route::post('/agent-profiles', [StudioSceneGenerationController::class, 'agentProfiles']);
 });
 
-Route::prefix('verify')->group(function (): void {
+Route::middleware(['auth:sanctum'])->prefix('verify')->group(function (): void {
     Route::post('/model', [VerifyIntegrationController::class, 'model']);
     Route::post('/image-provider', [VerifyIntegrationController::class, 'image']);
     Route::post('/video-provider', [VerifyIntegrationController::class, 'video']);
     Route::post('/pdf-provider', [VerifyIntegrationController::class, 'pdf']);
 });
 
-Route::get('/azure-voices', [AzureVoicesController::class, 'index']);
+Route::get('/azure-voices', [AzureVoicesController::class, 'index'])
+    ->middleware(['auth:sanctum']);

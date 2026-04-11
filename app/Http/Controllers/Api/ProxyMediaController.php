@@ -24,10 +24,9 @@ class ProxyMediaController extends Controller
             return ApiJson::error(ApiJson::INVALID_URL, 400, 'Invalid url');
         }
 
-        if (filter_var($host, FILTER_VALIDATE_IP)) {
-            if (! filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-                return ApiJson::error(ApiJson::INVALID_URL, 400, 'Private network hosts are not allowed');
-            }
+        $hostBlock = self::proxyHostNotAllowedReason($host);
+        if ($hostBlock !== null) {
+            return ApiJson::error(ApiJson::INVALID_URL, 400, $hostBlock);
         }
 
         try {
@@ -59,5 +58,33 @@ class ProxyMediaController extends Controller
                 $e->getMessage(),
             );
         }
+    }
+
+    /**
+     * @return string|null Error message for client, or null if the host is allowed
+     */
+    private static function proxyHostNotAllowedReason(string $host): ?string
+    {
+        $hostLower = strtolower($host);
+        if ($hostLower === 'localhost' || str_ends_with($hostLower, '.local') || str_ends_with($hostLower, '.internal')) {
+            return 'Private network hosts are not allowed';
+        }
+
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            if (! filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return 'Private network hosts are not allowed';
+            }
+
+            return null;
+        }
+
+        $resolved = @gethostbyname($host);
+        if ($resolved !== $host && filter_var($resolved, FILTER_VALIDATE_IP)) {
+            if (! filter_var($resolved, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return 'Private network hosts are not allowed';
+            }
+        }
+
+        return null;
     }
 }
