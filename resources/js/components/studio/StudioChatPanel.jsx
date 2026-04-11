@@ -801,7 +801,12 @@ export default function StudioChatPanel({
             </div>
 
             {error ? (
-                <p className={`px-3 py-1 text-xs ${isClassroom ? 'text-red-400' : 'text-red-600'}`}>{error}</p>
+                <p
+                    role="alert"
+                    className={`px-3 py-2 text-sm font-medium ${isClassroom ? 'text-red-300' : 'text-red-600'}`}
+                >
+                    {error}
+                </p>
             ) : null}
             {status ? (
                 <p className={`px-3 py-1 text-xs ${isClassroom ? 'text-zinc-500' : 'text-zinc-500'}`}>{status}</p>

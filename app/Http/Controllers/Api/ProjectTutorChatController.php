@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\Ai\LlmClient;
 use App\Support\ApiJson;
+use App\Support\TutorDefaultChatRuntime;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Throwable;
@@ -21,7 +22,10 @@ class ProjectTutorChatController extends Controller
             return ApiJson::error(ApiJson::MISSING_REQUIRED_FIELD, 400, 'messages are required');
         }
 
-        $apiKey = (string) ($request->input('apiKey') ?: config('tutor.default_chat.api_key'));
+        $apiKey = trim((string) $request->input('apiKey', ''));
+        if ($apiKey === '') {
+            $apiKey = TutorDefaultChatRuntime::apiKey();
+        }
         $baseUrl = (string) ($request->input('baseUrl') ?: config('tutor.default_chat.base_url'));
         $model = (string) ($request->input('model') ?: config('tutor.default_chat.model'));
 

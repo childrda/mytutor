@@ -9,6 +9,7 @@ use App\Support\Chat\TutorChatDirectorState;
 use App\Support\Chat\TutorChatPromptBuilder;
 use App\Support\Chat\TutorChatRequestContext;
 use App\Support\Chat\TutorChatRequestLimits;
+use App\Support\TutorDefaultChatRuntime;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -63,7 +64,7 @@ class ChatController extends Controller
         $model = is_string($body['model'] ?? null) && $body['model'] !== ''
             ? $body['model']
             : (string) config('tutor.default_chat.model');
-        $apiKey = $clientKey !== '' ? $clientKey : (string) config('tutor.default_chat.api_key');
+        $apiKey = $clientKey !== '' ? $clientKey : TutorDefaultChatRuntime::apiKey();
 
         $requiresKey = ($body['requiresApiKey'] ?? true) !== false;
         if ($requiresKey && $apiKey === '') {
