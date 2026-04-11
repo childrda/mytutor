@@ -54,6 +54,18 @@ function slugify(name) {
 
 const MAX_SCENE_SUMMARY_CHARS = 3200;
 
+/** Works on HTTP classroom pages where {@code crypto.randomUUID} may be missing (non-secure context). */
+function clientRandomId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        try {
+            return crypto.randomUUID();
+        } catch {
+            /* fall through */
+        }
+    }
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function summarizeContent(content) {
     if (!content || typeof content !== 'object') {
         return '';
@@ -309,6 +321,7 @@ export default function StudioChatPanel({
         whiteboardLedger: [],
     });
     const [status, setStatus] = useState('');
+    const [isSending, setIsSending] = useState(false);
     const [error, setError] = useState('');
     const abortRef = useRef(null);
     const listEndRef = useRef(null);
@@ -444,7 +457,7 @@ export default function StudioChatPanel({
         const baseText = text || (attachments.length ? '(see attached files)' : '');
         const fullText = baseText + attachNote;
         const userMessage = {
-            id: crypto.randomUUID(),
+            id: clientRandomId(),
             role: 'user',
             content: fullText,
             parts: [{ type: 'text', text: fullText }],
@@ -460,34 +473,43 @@ export default function StudioChatPanel({
 
         const controller = new AbortController();
         abortRef.current = controller;
-
-        const uiMessages = [...messages, userMessage].map((msg) => {
-            if (msg.parts && Array.isArray(msg.parts)) {
-                return { role: msg.role, parts: msg.parts };
-            }
-            return { role: msg.role, content: msg.content };
-        });
-
-        const body = {
-            messages: uiMessages,
-            storeState: buildStoreState({
-                lessonId,
-                lessonName,
-                scene: currentScene,
-                sessionType,
-                language: lessonLanguage,
-                scenePosition,
-                teachingProgress,
-            }),
-            config: {
-                agentIds: selectedAgentIds,
-                sessionType,
-            },
-            directorState,
-            requiresApiKey: true,
-        };
+        let chatTimeoutId = null;
+        let abortedByChatTimeout = false;
+        const chatTimeoutMs = 180000;
 
         try {
+            const uiMessages = [...messages, userMessage].map((msg) => {
+                if (msg.parts && Array.isArray(msg.parts)) {
+                    return { role: msg.role, parts: msg.parts };
+                }
+                return { role: msg.role, content: msg.content };
+            });
+
+            const body = {
+                messages: uiMessages,
+                storeState: buildStoreState({
+                    lessonId,
+                    lessonName,
+                    scene: currentScene,
+                    sessionType,
+                    language: lessonLanguage,
+                    scenePosition,
+                    teachingProgress,
+                }),
+                config: {
+                    agentIds: selectedAgentIds,
+                    sessionType,
+                },
+                directorState,
+                requiresApiKey: true,
+            };
+
+            chatTimeoutId = window.setTimeout(() => {
+                abortedByChatTimeout = true;
+                controller.abort();
+            }, chatTimeoutMs);
+
+            setIsSending(true);
             await streamTutorChat({
                 url: '/api/chat',
                 body,
@@ -500,7 +522,7 @@ export default function StudioChatPanel({
                     }
                     if (type === 'agent_start') {
                         setStatus(`${data?.agentName || 'Assistant'} is typing…`);
-                        const mid = data?.messageId || crypto.randomUUID();
+                        const mid = data?.messageId || clientRandomId();
                         streamingMsgIdRef.current = mid;
                         setMessages((m) => [
                             ...m,
@@ -585,12 +607,20 @@ export default function StudioChatPanel({
             });
         } catch (e) {
             if (e.name === 'AbortError') {
-                setError('Stopped');
+                setError(
+                    abortedByChatTimeout
+                        ? `No response after ${Math.round(chatTimeoutMs / 60000)} min — check Network for POST /api/chat (blocked SSE, proxy buffering, or auth).`
+                        : 'Stopped',
+                );
             } else {
                 setError(e.message || 'Request failed');
             }
             setStatus('');
         } finally {
+            if (chatTimeoutId != null) {
+                window.clearTimeout(chatTimeoutId);
+            }
+            setIsSending(false);
             abortRef.current = null;
             streamingMsgIdRef.current = null;
             turnSpeechBufferRef.current = '';
@@ -863,7 +893,7 @@ export default function StudioChatPanel({
                 <button
                     type="button"
                     onClick={send}
-                    disabled={!!status}
+                    disabled={isSending}
                     className={`mt-2 w-full rounded-lg py-2 text-sm font-medium disabled:opacity-50 ${
                         isClassroom
                             ? 'bg-indigo-600 text-white hover:bg-indigo-500'

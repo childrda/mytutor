@@ -176,11 +176,18 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
                 return p;
             });
         };
+        const onWinBlur = () => {
+            if (splitDragRef.current.active) {
+                onUp();
+            }
+        };
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
+        window.addEventListener('blur', onWinBlur);
         return () => {
             window.removeEventListener('mousemove', onMove);
             window.removeEventListener('mouseup', onUp);
+            window.removeEventListener('blur', onWinBlur);
         };
     }, []);
 
@@ -668,6 +675,13 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
                 />
 
                 <footer className="shrink-0 border-t border-zinc-800 bg-zinc-900 px-4 py-3">
+                    {currentScene && actions.length === 0 ? (
+                        <div className="mx-auto mb-3 max-w-6xl rounded-lg border border-amber-800/80 bg-amber-950/40 px-3 py-2 text-sm text-amber-100">
+                            <strong className="font-semibold">Play is disabled for this scene.</strong> There are no
+                            teaching-action steps yet. Open this lesson in Studio, run or add teaching actions for the
+                            scenes, save, then reload the classroom.
+                        </div>
+                    ) : null}
                     <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
                         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                             <ClassroomSceneNavButton
