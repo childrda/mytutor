@@ -13,6 +13,36 @@ const DEFAULT_AGENTS = [
     { id: 'lecturer', name: 'Lecturer', color: '#b45309' },
 ];
 
+const CLASSROOM_READ_AGENT_ALOUD_KEY = 'classroom_read_agent_aloud';
+
+/** Delay before agent TTS so classroom lesson hook can run `speechSynthesis.cancel()` after pause (otherwise it wipes our utterance). */
+const AGENT_SPEECH_AFTER_PAUSE_MS = 220;
+
+/**
+ * Browser speech only — call after lesson pause has flushed (see AGENT_SPEECH_AFTER_PAUSE_MS).
+ */
+function speakClassroomAgentReplyAudio(text, lang) {
+    const trimmed = text
+        .trim()
+        .replace(/\s+/g, ' ')
+        .slice(0, 32000);
+    if (!trimmed) {
+        return;
+    }
+    if (typeof window === 'undefined' || !window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+        return;
+    }
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(trimmed);
+    const raw = typeof lang === 'string' && lang.trim() !== '' ? lang.trim().slice(0, 32) : 'en';
+    u.lang = raw.includes('-') ? raw : `${raw}-US`;
+    try {
+        window.speechSynthesis.speak(u);
+    } catch {
+        /* ignore */
+    }
+}
+
 function slugify(name) {
     const s = name
         .toLowerCase()
@@ -252,8 +282,23 @@ export default function StudioChatPanel({
     scenePosition,
     /** @type {Record<string, unknown> | null | undefined} */
     teachingProgress,
+    /** Classroom: pause scripted lesson audio when agent TTS runs (does not set “user paused”). */
+    onPauseLessonIfPlaying,
 }) {
     const isClassroom = variant === 'classroom';
+    const [readAgentRepliesAloud, setReadAgentRepliesAloud] = useState(() => {
+        if (typeof window === 'undefined' || variant !== 'classroom') {
+            return false;
+        }
+        try {
+            return window.sessionStorage.getItem(CLASSROOM_READ_AGENT_ALOUD_KEY) === '1';
+        } catch {
+            return false;
+        }
+    });
+    const readAgentRepliesAloudRef = useRef(readAgentRepliesAloud);
+    const turnSpeechBufferRef = useRef('');
+    const agentSpeechTimeoutRef = useRef(null);
     const [sessionType, setSessionType] = useState('qa');
     const [messages, setMessages] = useState([]);
     const [composer, setComposer] = useState('');
@@ -347,11 +392,44 @@ export default function StudioChatPanel({
         abortRef.current?.abort();
         abortRef.current = null;
         setStatus('');
+        turnSpeechBufferRef.current = '';
+        if (typeof window !== 'undefined') {
+            if (agentSpeechTimeoutRef.current != null) {
+                window.clearTimeout(agentSpeechTimeoutRef.current);
+                agentSpeechTimeoutRef.current = null;
+            }
+            if (window.speechSynthesis) {
+                window.speechSynthesis.cancel();
+            }
+        }
     }, []);
 
     useEffect(() => {
         listEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, status]);
+
+    useEffect(() => {
+        readAgentRepliesAloudRef.current = readAgentRepliesAloud;
+    }, [readAgentRepliesAloud]);
+
+    useEffect(() => {
+        if (!readAgentRepliesAloud && isClassroom && typeof window !== 'undefined' && window.speechSynthesis) {
+            if (agentSpeechTimeoutRef.current != null) {
+                window.clearTimeout(agentSpeechTimeoutRef.current);
+                agentSpeechTimeoutRef.current = null;
+            }
+            window.speechSynthesis.cancel();
+        }
+    }, [readAgentRepliesAloud, isClassroom]);
+
+    useEffect(
+        () => () => {
+            if (typeof window !== 'undefined' && agentSpeechTimeoutRef.current != null) {
+                window.clearTimeout(agentSpeechTimeoutRef.current);
+            }
+        },
+        [],
+    );
 
     const send = useCallback(async () => {
         const text = composer.trim();
@@ -378,6 +456,7 @@ export default function StudioChatPanel({
         setAttachments([]);
         setError('');
         setStatus('Connecting…');
+        turnSpeechBufferRef.current = '';
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -439,6 +518,9 @@ export default function StudioChatPanel({
                     }
                     if (type === 'text_delta' && data?.messageId) {
                         const chunk = typeof data.content === 'string' ? data.content : '';
+                        if (isClassroom && readAgentRepliesAloudRef.current) {
+                            turnSpeechBufferRef.current += chunk;
+                        }
                         setMessages((m) =>
                             m.map((msg) =>
                                 msg.id === data.messageId ? { ...msg, content: msg.content + chunk } : msg,
@@ -469,6 +551,22 @@ export default function StudioChatPanel({
                     }
                     if (type === 'done') {
                         setStatus('');
+                        const buf = turnSpeechBufferRef.current;
+                        turnSpeechBufferRef.current = '';
+                        if (isClassroom && typeof onPauseLessonIfPlaying === 'function') {
+                            onPauseLessonIfPlaying();
+                        }
+                        if (isClassroom && readAgentRepliesAloudRef.current && buf.trim()) {
+                            if (typeof window !== 'undefined') {
+                                if (agentSpeechTimeoutRef.current != null) {
+                                    window.clearTimeout(agentSpeechTimeoutRef.current);
+                                }
+                                agentSpeechTimeoutRef.current = window.setTimeout(() => {
+                                    agentSpeechTimeoutRef.current = null;
+                                    speakClassroomAgentReplyAudio(buf, lessonLanguage);
+                                }, AGENT_SPEECH_AFTER_PAUSE_MS);
+                            }
+                        }
                         if (data?.directorState && typeof data.directorState === 'object') {
                             setDirectorState((prev) => ({
                                 ...prev,
@@ -479,6 +577,7 @@ export default function StudioChatPanel({
                         return;
                     }
                     if (type === 'error') {
+                        turnSpeechBufferRef.current = '';
                         setError(typeof data?.message === 'string' ? data.message : 'Stream error');
                         setStatus('');
                     }
@@ -494,6 +593,7 @@ export default function StudioChatPanel({
         } finally {
             abortRef.current = null;
             streamingMsgIdRef.current = null;
+            turnSpeechBufferRef.current = '';
         }
     }, [
         composer,
@@ -508,6 +608,8 @@ export default function StudioChatPanel({
         selectedAgentIds,
         scenePosition,
         teachingProgress,
+        isClassroom,
+        onPauseLessonIfPlaying,
     ]);
 
     const onPickFiles = (ev) => {
@@ -596,6 +698,36 @@ export default function StudioChatPanel({
                     Custom agents are stored in lesson meta (server). Lesson{' '}
                     <code className={isClassroom ? 'text-zinc-400' : 'text-zinc-500'}>agentIds</code> sync with your selection.
                 </p>
+                {isClassroom && typeof onPauseLessonIfPlaying === 'function' ? (
+                    <>
+                        <p className="mt-3 text-xs text-zinc-500">
+                            Sending a chat message pauses lesson playback until you press Play again.
+                        </p>
+                        <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-zinc-400">
+                            <input
+                                type="checkbox"
+                                checked={readAgentRepliesAloud}
+                                onChange={(e) => {
+                                    const v = e.target.checked;
+                                    setReadAgentRepliesAloud(v);
+                                    try {
+                                        window.sessionStorage.setItem(CLASSROOM_READ_AGENT_ALOUD_KEY, v ? '1' : '0');
+                                    } catch {
+                                        /* ignore */
+                                    }
+                                    if (!v && typeof window !== 'undefined' && window.speechSynthesis) {
+                                        window.speechSynthesis.cancel();
+                                    }
+                                }}
+                                className="mt-0.5 rounded border-zinc-600"
+                            />
+                            <span>
+                                Also read agent replies aloud (browser voice). Uses a short delay so lesson audio does not
+                                cancel the speech.
+                            </span>
+                        </label>
+                    </>
+                ) : null}
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">

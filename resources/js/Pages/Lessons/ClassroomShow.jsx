@@ -70,7 +70,12 @@ function durationMsForAction(a) {
         return Math.min(24000, Math.max(1600, n * 45 + 800));
     }
     if (a.type === 'interact') {
-        return 0;
+        if (a.mode === 'quiz_gate') {
+            return 0;
+        }
+        const pr = (a.prompt || '').trim();
+        const n = pr.length;
+        return Math.min(12000, Math.max(1800, n * 40 + 1000));
     }
     return 2200;
 }
@@ -189,6 +194,8 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
     const [playback, setPlayback] = useState(() => defaultPlaybackState(sortedScenes, stage.meta));
     const playbackRef = useRef(playback);
     playbackRef.current = playback;
+    /** True only after the user clicks Pause; cleared on Play. Used so scene changes auto-resume unless they paused. */
+    const lessonExplicitlyPausedRef = useRef(false);
 
     const scenesRef = useRef(sortedScenes);
     scenesRef.current = sortedScenes;
@@ -396,29 +403,41 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
         };
     }, [currentScene, actions.length, safeActionIndex, transcript, effectiveSpotlight]);
 
+    const stepForTimer = actions[safeActionIndex];
+
     useEffect(() => {
         if (!playback.isPlaying || !currentScene || actions.length === 0) {
             return undefined;
         }
         const a = actions[safeActionIndex];
-        if (a?.type === 'interact') {
+        if (!a) {
+            return undefined;
+        }
+        if (a.type === 'interact' && a.mode === 'quiz_gate') {
             patchPlayback({ isPlaying: false });
             return undefined;
         }
-        if (a?.type === 'speech' || a?.type === 'narration') {
+        if (a.type === 'speech' || a.type === 'narration') {
             return undefined;
         }
         const base = durationMsForAction(a);
         const ms = Math.max(200, base / playback.speed);
         const tid = window.setTimeout(() => advanceAfterCurrentStep(), ms);
         return () => clearTimeout(tid);
+        /* normalizeActions() returns a new array every render; do NOT depend on `actions` or `currentScene`
+         * or the timer resets constantly and never fires (scene/step never advances). */
     }, [
         playback.isPlaying,
         playback.speed,
         playback.loop,
-        currentScene,
-        actions,
+        currentScene?.id,
+        actions.length,
         safeActionIndex,
+        stepForTimer?.id,
+        stepForTimer?.type,
+        stepForTimer?.mode,
+        stepForTimer?.durationMs,
+        stepForTimer?.prompt,
         patchPlayback,
         advanceAfterCurrentStep,
     ]);
@@ -428,7 +447,8 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
             return;
         }
         const prev = sortedScenes[sceneIndex - 1];
-        patchPlayback({ sceneId: prev.id, actionIndex: 0, isPlaying: false });
+        const play = !lessonExplicitlyPausedRef.current;
+        patchPlayback({ sceneId: prev.id, actionIndex: 0, isPlaying: play });
     };
 
     const goNextScene = () => {
@@ -436,7 +456,8 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
             return;
         }
         const next = sortedScenes[sceneIndex + 1];
-        patchPlayback({ sceneId: next.id, actionIndex: 0, isPlaying: false });
+        const play = !lessonExplicitlyPausedRef.current;
+        patchPlayback({ sceneId: next.id, actionIndex: 0, isPlaying: play });
     };
 
     const goPrevAction = () => {
@@ -457,12 +478,21 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
         const a = actions[safeActionIndex];
         if (!playback.isPlaying && a?.type === 'interact') {
             if (safeActionIndex < actions.length - 1) {
+                lessonExplicitlyPausedRef.current = false;
                 patchPlayback({ actionIndex: safeActionIndex + 1, isPlaying: true });
             }
             return;
         }
-        patchPlayback({ isPlaying: !playback.isPlaying });
+        const nextPlaying = !playback.isPlaying;
+        lessonExplicitlyPausedRef.current = !nextPlaying;
+        patchPlayback({ isPlaying: nextPlaying });
     };
+
+    const pauseLessonIfPlaying = useCallback(() => {
+        if (playbackRef.current.isPlaying) {
+            patchPlayback({ isPlaying: false });
+        }
+    }, [patchPlayback]);
 
     const wb = currentScene ? normalizeWhiteboard(currentScene.whiteboards) : { paths: [] };
 
@@ -617,6 +647,7 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
                                 currentScene={currentScene}
                                 scenePosition={chatScenePosition}
                                 teachingProgress={chatTeachingProgress}
+                                onPauseLessonIfPlaying={pauseLessonIfPlaying}
                             />
                         </div>
                     </aside>
@@ -627,7 +658,13 @@ export default function ClassroomShow({ stage, scenes: initialScenes = [] }) {
                     onClose={() => setScenesDrawerOpen(false)}
                     scenes={sortedScenes}
                     currentSceneId={currentScene?.id}
-                    onSelectScene={(id) => patchPlayback({ sceneId: id, actionIndex: 0, isPlaying: false })}
+                    onSelectScene={(id) =>
+                        patchPlayback({
+                            sceneId: id,
+                            actionIndex: 0,
+                            isPlaying: !lessonExplicitlyPausedRef.current,
+                        })
+                    }
                 />
 
                 <footer className="shrink-0 border-t border-zinc-800 bg-zinc-900 px-4 py-3">
